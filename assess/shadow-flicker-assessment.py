@@ -6,7 +6,7 @@ Inclou: CSV #META, timing, curtailment mensual, Weibull vent, reponderació dire
 SOL per turbina (opcional), tall 10×D, tolerància azimutal.
 """
 
-import math, time, yaml, argparse, sys, json, csv, datetime as dt
+import os, math, time, yaml, argparse, sys, json, csv, datetime as dt
 from collections import defaultdict, deque
 import numpy as np
 import matplotlib.pyplot as plt
@@ -19,7 +19,16 @@ import rasterio.transform
 from shapely.geometry import Point, box, Polygon, MultiPolygon, shape
 from typing import Dict, Any, List, Tuple
 from functools import lru_cache
+from zoneinfo import ZoneInfo
+import pandas as pd
 
+try:
+    from numba import njit
+except Exception:
+    def njit(*args, **kwargs):
+        def wrap(f): return f
+        return wrap
+    
 cfg = None
 
 def _num(x, default=None):
@@ -27,7 +36,27 @@ def _num(x, default=None):
         return float(x)
     except (TypeError, ValueError):
         return default
+
+def make_time_index_utc(year: int, step_min: int = 1) -> pd.DatetimeIndex:
+    """Index continu en UTC per a tot l'any [inici, any+1)."""
+    return pd.date_range(
+        start=pd.Timestamp(year=year,  month=1, day=1, tz="UTC"),
+        end=pd.Timestamp(year=year+1, month=1, day=1, tz="UTC"),
+        freq=f"{step_min}min",
+        inclusive="left",
+    )    
     
+def ensure_output_dir(output_dir: str | None) -> str | None:
+    """
+    Si s'especifica output_dir, assegura que existeix (mkdir -p).
+    Retorna la ruta normalitzada o None si no s'ha indicat.
+    """
+    if output_dir:
+        out = os.path.abspath(output_dir)
+        os.makedirs(out, exist_ok=True)        
+        return out
+    return None
+
 def load_config(yaml_args, g: dict):
     """
     Carrega el YAML i reassigna seccions a variables globals per compatibilitat
@@ -49,6 +78,7 @@ def load_config(yaml_args, g: dict):
     except yaml.YAMLError as e:
         sys.exit(f"[ERROR] Error al parsejar el YAML {path}: {e}")
 
+                  
     # ---- VENT / WEIBULL / ROSA / DIRECCIONS ----
     if "wind_weibull" in cfg:
         g["WIND_WEIBULL"] = {int(m): (float(v["k"]), float(v["c"])) for m, v in cfg["wind_weibull"].items()}
@@ -89,6 +119,7 @@ def load_config(yaml_args, g: dict):
         g["SITE_LAT"] = _num(cfg["project"].get("site_lat"))
         g["SITE_LON"] = _num(cfg["project"].get("site_lon"))
         g["DEM_PATH"] = cfg["project"].get("dem_path")
+        g["OUTPUT_DIR"] = cfg["project"].get("output_dir")
 
     # ---- SHADOW FLICKER / LLINDARS ----
     if "shadow_flicker" in cfg:
@@ -163,6 +194,8 @@ YEAR = 2025
 PROJECT = ""
 ESIA = ""
 EXPORT_SUFFIX = ""
+OUTPUT_DIR = "SCENES"
+TZ_LOCAL = ZoneInfo("Europe/Madrid")
 # ------------ LLINDARS -----------------
 # Llindars (bones pràctiques europees)
 MAX_MIN_PER_DAY = 30.0  # minuts/dia (p.ex. criteri alemany)
@@ -310,37 +343,6 @@ SUNSHINE_FRAC_MONTH_PROFILES = {  # aprox. inland català i apujant una mica per
     #"REALISTIC": {m:0.6 for m in range(1,13)},
     "REALISTIC": {1:0.52, 2:0.52, 3:0.55, 4:0.60, 5:0.70, 6:0.75, 7:0.80, 8:0.80, 9:0.70,10:0.65,11:0.55,12:0.52}
 }
-
-
-# Il·luminància (lx) per alçada solar (deg) – Annex LAI (p. 8) (Germany data)
-#LUX_BY_HEIGHT = {
-#     3:  389,  5:  664, 10: 1402, 15: 2207, 20: 3071,
-#    25: 3986, 30: 4942, 35: 5929, 40: 6935, 45: 7949,
-#    50: 8959, 55: 9951, 60: 10912
-#}
-
-# To assure results we lower Catalonia Passanant values with x1.449838 factor aplied to Mid-Germany example values in German guidelines
-# Helper script available to compare and transpose data from one location to another
-# python compute_lux_uplift_pvgis.py
-# or with explicit coords/names:
-# python compute_lux_uplift_pvgis.py --baseline "Frankfurt" 50.1109 8.6821 --target "Passanant" 41.5336 1.1981
-# (optional) also save the raw PVGIS JSON responses:
-# python compute_lux_uplift_pvgis.py --save-json
-#LUX_BY_HEIGHT = {
-#     3:  564,  5:  963, 10: 2033, 15: 3200, 20: 4452,
-#    25: 5779, 30: 7165, 35: 8596, 40: 10055, 45: 11525,
-#    50: 12989, 55: 14427, 60: 15821
-#}
-
-# "Strahlungsäquivalent" (lx per W/m²) per alçada – punts ancorats de la LAI
-# De l'existència de equivalents per energia i per tenir per tots els valors també de la LAI a Alemanya valors per sobre de 120 W/m2 
-# podem deduir que s'han de considerar les intensitats perquè l'òptica estableix que el contrast i per tant l'efecte "shadow flicker" és 
-# més intens
-#K_EQ_BY_HEIGHT = { 3: 62.0, 60: 105.0 }  # interpolarem linealment entre 3° i 60°
-
-# WEIGHT one forth of radiation intensity as shadow is more intense, 
-# more preceptable when contrast and photons (energy) is higher
-#LUX_WEIGHT = 0.25
 
 # No cal mirar per elevació per sota de 3º
 MIN_ELEV = 3.0
@@ -583,81 +585,42 @@ def elev_min_deg_for_ghi_watts(given_d: float, target_ghi: float = 120.0, dni: f
         return 0
 
 
-
-# ---------- Intensitat lúminica ----------
-"""
-def _interp_table(x, xp, fp):
-    # interp lineal amb clamp
-    xs = sorted(xp); 
-    if x <= xs[0]: return fp[xs[0]]
-    if x >= xs[-1]: return fp[xs[-1]]
-    for i in range(len(xs)-1):
-        x0, x1 = xs[i], xs[i+1]
-        if x0 <= x <= x1:
-            y0, y1 = fp[x0], fp[x1]
-            t = (x - x0) / (x1 - x0)
-            return y0 + t*(y1 - y0)
-
-def lux_from_height(hdeg):
-    return _interp_table(hdeg, LUX_BY_HEIGHT, LUX_BY_HEIGHT)
-
-def k_equiv_from_height(hdeg):
-    # 62 lx/Wm² @ 3°, 105 lx/Wm² @ 60° (LAI, p. 8)
-    return _interp_table(hdeg, K_EQ_BY_HEIGHT, K_EQ_BY_HEIGHT)
-
-# 0 or 1
-def sun_effective_LAI(hdeg):
-    if hdeg < 3.0: 
-        return 0  # LAI: per sota ~3° es pot negligir
-    E_lux = lux_from_height(hdeg)          # horitzontal (LAI)
-    # print(E_lux)
-    k_eq  = k_equiv_from_height(hdeg)      # lx per W/m² “equivalent” (LAI)
-    # print(k_eq)
-    #E_prop = k_eq / 120                   # llindar lx "equivalent" a DNI=120
-    # print(E_min)
-    # Convert ponderated lux to watts
-    E_watts = lux_to_dni(E_lux, hdeg)
-    E_watts_prop = E_watts / 120                   # llindar lx "equivalent" a DNI=120
-    if (E_watts_prop >= 1):
-        return 1
-    else:
-        return 0
-
-def lux_to_dni(lux: float, solar_elevation_deg: float) -> float:
-    # Convert illuminance in lux to Direct Normal Irradiance (W/m²).
-    # Assumes luminous efficacy of 105 lm/W for daylight.
-    
-    # lux: measured horizontal illuminance
-    # solar_elevation_deg: solar elevation angle in degrees (0° = horizon, 90° = zenith)
-    LUMINOUS_EFFICACY_SUN = 105.0  # lm/W
-    
-    h_rad = math.radians(solar_elevation_deg)
-    if h_rad <= 0:
-        return 0.0  # sun below horizon
-    return lux / (LUMINOUS_EFFICACY_SUN * math.sin(h_rad))
-
-# intensitat ponderada
-def illum_weight_LAI(hdeg):
-    if hdeg < MIN_ELEV: return 0.0
-    E = lux_from_height(hdeg); k = k_equiv_from_height(hdeg); Emin = 120.0*k
-    return 1 + (max(0.0, min(1.0, E / Emin)) * LUX_WEIGHT)  
-    # 1 més fracció lux_weight de valor entre 0..1; 1 quan E >= Emin
-    lux_weighted = max(0.0, min(1.0, E / Emin))
-    if lux_weighted > 0:
-        lux_weighted = 1 + (lux_weighted * LUX_WEIGHT)
-    return lux_weighted
-"""
-
 # ---------- (4) Numba screening ----------
-try:
-    from numba import njit
-except Exception:
-    def njit(*args, **kwargs):
-        def wrap(f): return f
-        return wrap
-
 @njit(cache=True, fastmath=True)
 def _dem_bilinear_scalar(Z, x, y, TA, TB, TC, TD, TE, TF):
+    # Inversa afí (GDAL/rasterio): 
+    # x = TA*col + TB*row + TC
+    # y = TD*col + TE*row + TF
+    dX = x - TC
+    dY = y - TF
+    det = TA*TE - TB*TD
+    if det == 0.0 or abs(det) < 1e-20:
+        return float('nan')
+    col = ( dX*TE - dY*TB) / det
+    row = (-dX*TD + dY*TA) / det
+
+    nrows, ncols = Z.shape
+    # clamp suau als marges, amb NN a la vora
+    if not (0.0 <= col <= ncols-1 and 0.0 <= row <= nrows-1):
+        # tolera errors numèrics de pocs nanòmetres
+        eps = 1e-9
+        if col < -eps or row < -eps or col > (ncols-1)+eps or row > (nrows-1)+eps:
+            return float('nan')
+        col = min(max(col, 0.0), ncols-1.0)
+        row = min(max(row, 0.0), nrows-1.0)
+
+    c0 = int(math.floor(col)); r0 = int(math.floor(row))
+    if c0 == ncols-1 or r0 == nrows-1:
+        return float(Z[r0, c0])  # nearest a la vora
+    c1 = c0 + 1; r1 = r0 + 1
+    tx = col - c0; ty = row - r0
+    z00 = Z[r0, c0]; z10 = Z[r0, c1]
+    z01 = Z[r1, c0]; z11 = Z[r1, c1]
+    z0 = z00*(1.0-ty) + z01*ty
+    z1 = z10*(1.0-ty) + z11*ty
+    return float(z0*(1.0-tx) + z1*tx)
+
+def _dem_bilinear_scalar_old(Z, x, y, TA, TB, TC, TD, TE, TF):
     col = (x - TC) / TA
     row = (y - TF) / TE
     r0 = int(math.floor(row)); c0 = int(math.floor(col))
@@ -673,7 +636,7 @@ def _dem_bilinear_scalar(Z, x, y, TA, TB, TC, TD, TE, TF):
     return z0*(1.0-fc) + z1*fc
 
 @njit(cache=True, fastmath=True)
-def _terrain_screen_ok_path_old(tx, ty, px, py, elev_deg, rec_h_m,
+def _terrain_screen_ok_path_raster(tx, ty, px, py, elev_deg, rec_h_m,
                             Z, TA, TB, TC, TD, TE, TF,
                             n_samp_per_km, tol_m):
     dist = math.hypot(px - tx, py - ty)
@@ -701,104 +664,107 @@ def terrain_screen_ok_batch(tx, ty, elev_deg, rec_h_m,
                             rows, cols, XX, YY,
                             Z, TA, TB, TC, TD, TE, TF,
                             n_samp_per_km, tol_m):
+    
     out = np.zeros(rows.shape[0], dtype=np.uint8)
     for k in range(rows.shape[0]):
         ri = int(rows[k]); ci = int(cols[k])
         px = float(XX[ri, ci]); py = float(YY[ri, ci])
-        ok = _terrain_screen_ok_path(tx, ty, px, py, elev_deg, rec_h_m,
+        ok = _terrain_screen_ok_path_raster(tx, ty, px, py, elev_deg, rec_h_m,
                                      Z, TA, TB, TC, TD, TE, TF,
                                      n_samp_per_km, tol_m)
         out[k] = 1 if ok else 0
     return out
 
 
-import numpy as np
-from functools import lru_cache
-from numba import njit
-
 # ---------- LOS robust amb tolerància ----------
 @njit(cache=True, fastmath=True)
-def _los_clear_tol(x0,y0,z0, x1,y1,z1, dem_x,dem_y, dem_z, step_m, tol):
-    dx, dy = x1 - x0, y1 - y0
+def _world_to_pixel(x, y, TA, TB, TC, TD, TE, TF):
+    """
+    Inversa de l'afí GDAL:
+      X = TA + col*TB + row*TC
+      Y = TD + col*TE + row*TF
+    Retorna (col, row) en floats.
+    """
+    dX = x - TA
+    dY = y - TD
+    det = TB*TF - TC*TE
+    if det == 0.0:
+        return np.nan, np.nan
+    col = ( dX*TF - dY*TC) / det
+    row = (-dX*TE + dY*TB) / det
+    return col, row
+
+@njit(cache=True, fastmath=True)
+def _bilinear_dem_affine(xi, yi, DEM_Z, TA, TB, TC, TD, TE, TF):
+    """
+    Interpolació bilinear directa en píxels, tolerant rotació.
+    """
+    col, row = _world_to_pixel(xi, yi, TA, TB, TC, TD, TE, TF)
+    if not (col == col and row == row):  # NaN
+        return np.nan
+
+    c0 = int(np.floor(col)); r0 = int(np.floor(row))
+    c1 = c0 + 1;             r1 = r0 + 1
+    nrows, ncols = DEM_Z.shape
+
+    if c0 < 0 or r0 < 0 or c1 >= ncols or r1 >= nrows:
+        return np.nan
+
+    tx = col - c0
+    ty = row - r0
+    z00 = DEM_Z[r0, c0]; z10 = DEM_Z[r0, c1]
+    z01 = DEM_Z[r1, c0]; z11 = DEM_Z[r1, c1]
+    return (1.0-ty)*((1.0-tx)*z00 + tx*z10) + ty*((1.0-tx)*z01 + tx*z11)
+
+@njit(cache=True, fastmath=True)
+def _los_clear_tol_affine(x0,y0,z0, x1,y1,z1,
+                          DEM_Z, TA, TB, TC, TD, TE, TF,
+                          step_m, tol):
+    dx = x1 - x0
+    dy = y1 - y0
+    dz = z1 - z0
     dist = (dx*dx + dy*dy) ** 0.5
     if dist <= step_m:
         return True
     n = max(1, int(dist / step_m))
-    for i in range(1, n):  # excloem extrems
+    for i in range(1, n):
         t = i / n
-        xi = x0 + t * dx
-        yi = y0 + t * dy
-        zi = z0 + t * (z1 - z0)
+        xi = x0 + t*dx
+        yi = y0 + t*dy
+        zi = z0 + t*dz
 
-        # bilinear DEM (assumim north-up, eixos monòtons)
-        ix = np.searchsorted(dem_x, xi) - 1
-        iy = np.searchsorted(dem_y, yi) - 1
-        if ix < 0 or iy < 0 or ix >= dem_x.size - 1 or iy >= dem_y.size - 1:
-            # fora del DEM → no podem afirmar obstacle
-            continue
-
-        xL, xR = dem_x[ix], dem_x[ix+1]
-        yB, yT = dem_y[iy], dem_y[iy+1]
-        tx = (xi - xL) / (xR - xL)
-        ty = (yi - yB) / (yT - yB)
-
-        zLB = dem_z[iy, ix];   zRB = dem_z[iy, ix+1]
-        zLT = dem_z[iy+1, ix]; zRT = dem_z[iy+1, ix+1]
-        zdem = (1.0 - ty)*((1.0 - tx)*zLB + tx*zRB) + ty*((1.0 - tx)*zLT + tx*zRT)
-
-        # Tolerància: permet un marge per soroll de DEM/interpolació
-        if zdem > zi + tol:
+        zdem = _bilinear_dem_affine(xi, yi, DEM_Z, TA, TB, TC, TD, TE, TF)
+        if zdem == zdem and zdem > zi + tol:  # tolerància vertical
             return False
     return True
 
-# ---------- Conversió GeoTransform → eixos ----------
-def _assert_north_up(TA, TB, TC, TD, TE, TF):
-    if abs(TC) > 1e-12 or abs(TE) > 1e-12:
-        raise NotImplementedError("GeoTransform amb rotació no suportada: TC/TE ≠ 0 (cal reprojecció/warp).")
-
-@lru_cache(maxsize=8)
-def _dem_axes_cached(rows, cols, TA, TB, TC, TD, TE, TF):
-    _assert_north_up(TA, TB, TC, TD, TE, TF)
-    # TA,TD = cantonada superior-esquerra de la cel·la [0,0]
-    # Centres de píxel:
-    xs = TA + (np.arange(cols) + 0.5) * TB
-    ys = TD + (np.arange(rows) + 0.5) * TF  # sovint TF<0
-    dem_flip_x = False
-    dem_flip_y = False
-    if cols >= 2 and xs[1] < xs[0]:
-        xs = xs[::-1]; dem_flip_x = True
-    if rows >= 2 and ys[1] < ys[0]:
-        ys = ys[::-1]; dem_flip_y = True
-    return xs.astype(np.float64), ys.astype(np.float64), dem_flip_x, dem_flip_y
-
-def _maybe_flip_dem_z(dem_z, flip_x, flip_y):
-    z = dem_z
-    if flip_y: z = z[::-1, :]
-    if flip_x: z = z[:, ::-1]
-    return z
-
-# ---------- ADAPTER compatible amb la teva signatura ----------
 def _terrain_screen_ok_path(tx, ty, rx, ry, elev_t, hrec,
                             DEM_Z, TA, TB, TC, TD, TE, TF,
                             n_samp_per_km, RASTER_TOL_M):
     """
-    Retorna True si la línia (tx,ty,elev_t)→(rx,ry,hrec) NO és obstruïda.
+    - Suporta la rotació que tenim al DEM.
     - step_m = 1000 / n_samp_per_km
-    - Tolerància vertical = RASTER_TOL_M
-    - Suporta north-up (sense rotació). Si hi ha rotació al GeoTransform → NotImplementedError.
+    - tol vertical = RASTER_TOL_M
     """
-    rows, cols = DEM_Z.shape
-    dem_x, dem_y, fx, fy = _dem_axes_cached(rows, cols, TA, TB, TC, TD, TE, TF)
-    dem_z = _maybe_flip_dem_z(DEM_Z, fx, fy).astype(np.float64, copy=False)
+    # Ensure Z is float64 C-contiguous (Numba-friendly)
+    DEM_Z = np.ascontiguousarray(Z, dtype=np.float64)
 
-    # Pas de mostreig segons n_samp_per_km (evita div/0)
+    # Ensure TA..TF are plain floats (not numpy scalars)
+    TA = float(TA); TB = float(TB); TC = float(TC)
+    TD = float(TD); TE = float(TE); TF = float(TF)
+
+    # Quick sanity check on determinant (once)
+    det = TB*TF - TC*TE
+    if det == 0.0 or abs(det) < 1e-20:
+        raise ValueError("Affine determinant is zero/near-zero; raster geotransform is degenerate.")
+    
     samples = max(1, int(n_samp_per_km))
     step_m = 1000.0 / float(samples)
     tol = float(max(0.0, RASTER_TOL_M))
 
-    return _los_clear_tol(tx, ty, elev_t, rx, ry, hrec,
-                          dem_x, dem_y, dem_z,
-                          step_m, tol)
+    return _los_clear_tol_affine(tx, ty, elev_t, rx, ry, hrec,
+                                 DEM_Z, TA, TB, TC, TD, TE, TF,
+                                 step_m, tol)
 
 
 def draw_dem_hillshade(ax, alpha_hs=0.85, alpha_dem=0.45, cmap_dem='Greys'):    
@@ -857,9 +823,8 @@ def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, h_rec_raster,
 
     rows_sel = idx_sel[:,0].astype(np.int64)
     cols_sel = idx_sel[:,1].astype(np.int64)
-
     ok_mask = terrain_screen_ok_batch(
-        float(tx), float(ty), float(elev), float(h_rec_raster),
+        float(tx), float(ty), elev, float(h_rec_raster),
         rows_sel, cols_sel, XX, YY,
         DEM_Z, TA, TB, TC, TD, TE, TF,
         int(n_samp_per_km), float(tol_m)
@@ -1023,20 +988,6 @@ def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
             t += step
             continue
 
-            
-        # alternativa bool de càlcul, n'hi ha o no suficent força de llum solar    
-        # illum_w = 1.0 if not IS_WORST else sun_effective_LAI(elev_t)
-        # w_base *= illum_w
-        
-        # weighted no s'aplica amb la guia d'Alemanya, a Holanda i al Regne Unit sí...
-        # és perfectament defensable aplicar un augment per intensitat energètica de la llum
-        # però no ho fem per evitar problemes amb el protocol alemany que és del standard "de facto" a Catalunya i Espanya
-        # illum_w = 1.0 if IS_WORST else illum_weight_LAI(elev_t)  # o usa sun_effective_LAI(...) per gating
-        # w_base *= illum_w
-        # if w_base <= 0:
-        #    continue  # no hi ha “sol efectiu” segons LAI, no s’acumula                    
-
-            
         # --- RECEPTORS ---
         for (nuc, rid, rx, ry, hrec) in RPTS:
             for (tname, tx, ty, lat, lon, plat_h, hub_h, rotor_d, shade_corr, cut_in, cut_out, model, power) in TURBINES:
@@ -1105,21 +1056,6 @@ def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
                                                    DEM_Z, TA, TB, TC, TD, TE, TF,
                                                    n_samp_per_km, RASTER_TOL_M):
                         continue
-                """
-                if scen_name == "REALISTIC":
-                    # debug puntual a migdia
-                    dbg = {
-                        "m": m,
-                        "sun": round(sun,3),
-                        "avail": round(avail,3),
-                        "curt": round(curt,3),
-                        "weibull": weibull,
-                        "wind_dir": round(wind,3),
-                        "illum_w": illum_w,
-                        "w_base": round(w_base if 'w_base' in locals() else w,3)
-                    }
-                    print("[DBG]", dbg)
-                """     
                 minutes_w = TIME_STEP_MIN if IS_WORST else TIME_STEP_MIN * w_base
                 if minutes_w > 0:
                     step_w_R[rid] = max(step_w_R[rid], (1.0 if IS_WORST else w_base))
@@ -1217,13 +1153,8 @@ def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
     for (rid, dte), mins in acc_min_day_R.items():
         # acccumulate using >= as we can suppose that most of the values even when exactly 30min
         # have a seconds remainder pushing the value over the limit 3min 0sec will be statistically neglectable
-        if mins >= MAX_MIN_PER_DAY:
+        if mins > MAX_MIN_PER_DAY:
             over30_days_R[rid] += 1
-            if (rid == "GLO_1"):
-                print(scen_name + "|GLO_1|" + format_eu(mins) + "|" + str(over30_days_R[rid]))
-        else:
-            if (rid == "GLO_1" and scen_name == "REALISTIC"):
-                print(scen_name + "|GLO_1|" + format_eu(mins) + "|" + str(over30_days_R[rid]))
             
         if mins > max_day_min_R[rid]:
             max_day_min_R[rid]  = mins
@@ -1428,8 +1359,8 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     ax.set_xlabel("UTM X (m)")
     ax.set_ylabel("UTM Y (m)")    
 
-    png = f"SHADOW_{YEAR}_HOURS_YEAR_{file_suffix}.png"
-    plt.savefig(png, dpi=180); plt.close(fig)
+    result_path = os.path.join(OUTPUT_DIR, f"SHADOW_{YEAR}_HOURS_YEAR_{file_suffix}.png")    
+    plt.savefig(result_path, dpi=180); plt.close(fig)
     
     fig, ax = plt.subplots(1,1, figsize=(12,6), constrained_layout=True)
     fig.suptitle(f"{title_prefix} – dies/any")
@@ -1454,8 +1385,9 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     ax.set_ylim(YMIN, YMAX)
     ax.set_xlabel("UTM X (m)")
     ax.set_ylabel("UTM Y (m)")    
-    png = f"SHADOW_{YEAR}_DAYS_YEAR_{file_suffix}.png"
-    plt.savefig(png, dpi=180); plt.close(fig)
+
+    result_path = os.path.join(OUTPUT_DIR, f"SHADOW_{YEAR}_DAYS_YEAR_{file_suffix}.png")        
+    plt.savefig(result_path, dpi=180); plt.close(fig)
 
     fig, ax = plt.subplots(1,1, figsize=(12,6), constrained_layout=True)    
     fig.suptitle(f"{title_prefix} – minuts/dia afectat")
@@ -1478,9 +1410,9 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     ax.set_xlim(XMIN, XMAX)
     ax.set_ylim(YMIN, YMAX)
     ax.set_xlabel("UTM X (m)")
-    ax.set_ylabel("UTM Y (m)")    
-    png = f"SHADOW_{YEAR}_MINUTS_DAY_{file_suffix}.png"
-    plt.savefig(png, dpi=180); plt.close(fig)
+    ax.set_ylabel("UTM Y (m)")   
+    result_path = os.path.join(OUTPUT_DIR, f"SHADOW_{YEAR}_MINUTS_DAY_{file_suffix}.png")
+    plt.savefig(result_path, dpi=180); plt.close(fig)
 
     
 def prepare_csv(scen_name, res):
@@ -1494,8 +1426,11 @@ def prepare_csv(scen_name, res):
         mxd  = res["max_day_min_R"].get(rid, 0.0)
         mxd_date = res["max_day_date_R"].get(rid, "")
         rows.append([nuc, rid, rx, ry, hrec, round(mins/60.0,2), dys, round(mpd,2), over, round(mxd,1), mxd_date])
-        
-    write_csv_with_meta(f"SHADOW_{YEAR}_{scen_name}_{EXPORT_SUFFIX}_receptors.csv",
+    
+    
+    result_path = os.path.join(OUTPUT_DIR, f"SHADOW_{YEAR}_{scen_name}_{EXPORT_SUFFIX}_receptors.csv")
+    
+    write_csv_with_meta(result_path,
                         ["Nucli","ReceptorID","X","Y","h_rec(m)","Hores_any","Dies_afectats","Minuts/dia(mitjana)",
                         f"Dies>{int(MAX_MIN_PER_DAY)}min","Max_min_dia","Data_max_dia"],
                         rows, scen_name)
@@ -1520,10 +1455,14 @@ def run_all():
         required=False,
         help="yes o y. Tests ràpids"
     )
+    
     args = parser.parse_args()
 
     cfg = load_config(args, globals())
 
+    if OUTPUT_DIR:
+        ensure_output_dir(OUTPUT_DIR)        
+    
     if (args.scene == None or args.scene.upper() == "WORST"):
         # WORST (astronòmic)
         res_worst = compute_shadow_flicker("WORST")

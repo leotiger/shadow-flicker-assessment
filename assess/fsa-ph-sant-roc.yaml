@@ -8,6 +8,7 @@ project:
   site_lat: 41.515244
   site_lon: 1.194816
   dem_path: "DEM_clip_5m-rpglobal.tif"
+  output_dir: "ph-sant-roc"
 
 domain:
   xmin: 344500
