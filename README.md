@@ -53,7 +53,6 @@ Despite having been reviewed and found error free, be advised that this script i
 
 - [x] Clean and improve code base
 - [x] Export of all data for traceability
-- [x] Accelerate processing by applying precalc and cache of solar positions
 - [x] Improve yaml documentation and comments
 _ [x] Make timezone aware and export all data, not only cummulative data
 - [x] Translations and i18n support

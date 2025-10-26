@@ -1,0 +1,306 @@
+# Configuració Shadow Flicker Assessement
+
+project:
+  year: 2025
+  name: "Projecte Híbrid Gardeny"
+  esia: "FUE-2024-03653069"
+  export: "PHGARDENY"
+  site_lat: 41.515244
+  site_lon: 1.194816
+  dem_path: "DEM_clip_5m-rpglobal.tif"
+  output_dir: "ph-gardeny"
+
+domain:
+  xmin: 340500
+  ymin: 4598500
+  xmax: 347500
+  ymax: 4603500
+
+turbines:
+  # Cada turbina amb coordenades UTM i paràmetres
+  
+  - id: "XA3"
+    x: 343654
+    y: 4601050
+    lat: 41.545821
+    lon: 1.125558
+    plat_h: 2.0
+    hub_height_m: 112.0
+    rotor_diameter_m: 172.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "N175/6.0x test"
+    power_MW: 6.23
+
+  - id: "XA4b"
+    x: 344259
+    y: 4601624
+    lat: 41.551185
+    lon: 1.132596 
+    plat_h: 2.0    
+    hub_height_m: 112.0
+    rotor_diameter_m: 172.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "N175/6.0x"
+    power_MW: 6.23
+
+  - id: "XA5"
+    x: 345235
+    y: 4601500
+    lat: 41.550125
+    lon: 1.144355
+    plat_h: 2.0    
+    hub_height_m: 112.0
+    rotor_diameter_m: 172.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "N175/6.0x"
+    power_MW: 6.23
+
+  - id: "XA7B"
+    x: 345740
+    y: 4600652
+    lat: 41.542610
+    lon: 1.150621
+    plat_h: 2.0    
+    hub_height_m: 112.0
+    rotor_diameter_m: 172.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "N175/6.0x"
+    power_MW: 6.23
+
+  - id: "XB2"
+    x: 346931
+    y: 4600156
+    lat: 41.538049
+    lon: 1.164923
+    plat_h: 2.0    
+    hub_height_m: 112.0
+    rotor_diameter_m: 172.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "N175/6.0x"
+    power_MW: 6.23
+
+  - id: "YA1"
+    x:  346165
+    y: 4599897
+    lat: 41.535929
+    lon: 1.155910
+    plat_h: 2.0    
+    hub_height_m: 112.0
+    rotor_diameter_m: 172.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "N175/6.0x"
+    power_MW: 6.23
+
+  # … afegeix més turbines …
+
+receptors:
+  - town: "Nalec"
+    id: "NAL_1"
+    x: 343021.03
+    y: 4602515.42
+    height_m: 4.0
+
+  - town: "Ciutadilla"
+    id: "CIU_1"
+    x: 344907.16
+    y: 4602593.11
+    height_m: 4.0
+
+  - town: "004001200CG40B"
+    id: "CAT_1"
+    x: 345459.00
+    y: 4601257.00
+    height_m: 4.0
+
+  - town: "Sant Roc"
+    id: "SAN_1"
+    x: 344840.20
+    y: 4600631
+    height_m: 4.0
+
+shadow_flicker:
+  time_step_min: 1.0         # resolució temporal en minuts, 1min protocol alemany
+  grid_step_m: 25          # pas del raster. < 25 afegeix molta carrega computacional
+  raster_tol_m: 1.0
+  h_rec_raster_m: 2.0
+  max_checks_step: 5000    # no puja a més de 5000 per evitar carrega computacional
+  n_samp_per_km: 60        # 60 ~= 16,6m, 40 = 25m
+  
+  min_elev_deg: 3.0          # llindar geomètric mínim protocol alemany
+  min_ghi_wm2: 120.0         # irradiància mínima per considerar SF
+  annual_limit_hours_astr: 30.0
+  annual_limit_hours_real: 8.0
+  daily_limit_min: 30.0
+
+wind:
+  use_dir_reweight: true
+  n_sectors: 8               # N, NE, E, SE, S, SW, W, NW
+
+  # basat en recurs eòlic del projecte comunicat pel promotor a partir de freqüències
+  monthly_dir_rose:
+    1:  {N: 0.013, NE: 0.035, E: 0.044, SE: 0.195, S: 0.092, SW: 0.237, W: 0.264, NW: 0.120}
+    2:  {N: 0.013, NE: 0.035, E: 0.044, SE: 0.195, S: 0.092, SW: 0.237, W: 0.264, NW: 0.120}
+    3:  {N: 0.013, NE: 0.034, E: 0.043, SE: 0.241, S: 0.092, SW: 0.193, W: 0.265, NW: 0.119}
+    4:  {N: 0.013, NE: 0.034, E: 0.043, SE: 0.241, S: 0.092, SW: 0.193, W: 0.265, NW: 0.119}
+    5:  {N: 0.013, NE: 0.034, E: 0.043, SE: 0.241, S: 0.092, SW: 0.193, W: 0.265, NW: 0.119}
+    6:  {N: 0.013, NE: 0.035, E: 0.043, SE: 0.262, S: 0.092, SW: 0.185, W: 0.251, NW: 0.119}
+    7:  {N: 0.013, NE: 0.035, E: 0.043, SE: 0.262, S: 0.092, SW: 0.185, W: 0.251, NW: 0.119}
+    8:  {N: 0.013, NE: 0.035, E: 0.043, SE: 0.262, S: 0.092, SW: 0.185, W: 0.251, NW: 0.119}
+    9:  {N: 0.013, NE: 0.034, E: 0.043, SE: 0.215, S: 0.091, SW: 0.218, W: 0.267, NW: 0.119}
+    10:  {N: 0.013, NE: 0.034, E: 0.043, SE: 0.215, S: 0.091, SW: 0.218, W: 0.267, NW: 0.119}
+    11:  {N: 0.013, NE: 0.034, E: 0.043, SE: 0.215, S: 0.091, SW: 0.218, W: 0.267, NW: 0.119}
+    12:  {N: 0.013, NE: 0.035, E: 0.044, SE: 0.195, S: 0.092, SW: 0.237, W: 0.264, NW: 0.120} 
+
+  wind_rose: ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+
+# fracció de dies amb sol i alta irradiació sobre mes
+sunshine_frac_profiles:
+  WORST:
+    1: 1.0
+    2: 1.0
+    3: 1.0
+    4: 1.0
+    5: 1.0
+    6: 1.0
+    7: 1.0
+    8: 1.0
+    9: 1.0
+    10: 1.0
+    11: 1.0
+    12: 1.0
+
+  REALISTIC:
+    1: 0.52
+    2: 0.52
+    3: 0.55
+    4: 0.60
+    5: 0.70
+    6: 0.75
+    7: 0.80
+    8: 0.80
+    9: 0.70
+    10: 0.65
+    11: 0.55
+    12: 0.52
+
+# limitar per falta de vent puntual
+avail_month_profiles:
+  WORST:
+    1: 1.0
+    2: 1.0
+    3: 1.0
+    4: 1.0
+    5: 1.0
+    6: 1.0
+    7: 1.0
+    8: 1.0
+    9: 1.0
+    10: 1.0
+    11: 1.0
+    12: 1.0
+
+  REALISTIC:
+    1: 0.975
+    2: 0.975
+    3: 0.975
+    4: 0.975
+    5: 0.975
+    6: 0.975
+    7: 0.975
+    8: 0.975
+    9: 0.975
+    10: 0.975
+    11: 0.975
+    12: 0.975
+
+# parada per manteniment/successos interns o causes externes com curtailment REE
+curtail_month_profiles:
+  WORST:
+    maint:
+      1: 0.0
+      2: 0.0
+      3: 0.0
+      4: 0.0
+      5: 0.0
+      6: 0.0
+      7: 0.0
+      8: 0.0
+      9: 0.0
+      10: 0.0
+      11: 0.0
+      12: 0.0
+    ree:
+      1: 0.0
+      2: 0.0
+      3: 0.0
+      4: 0.0
+      5: 0.0
+      6: 0.0
+      7: 0.0
+      8: 0.0
+      9: 0.0
+      10: 0.0
+      11: 0.0
+      12: 0.0
+
+  REALISTIC:
+    maint:
+      1: 0.0
+      2: 0.0
+      3: 0.02
+      4: 0.02
+      5: 0.02
+      6: 0.02
+      7: 0.02
+      8: 0.02
+      9: 0.02
+      10: 0.02
+      11: 0.02
+      12: 0.0
+    ree:
+      1: 0.01
+      2: 0.01
+      3: 0.015
+      4: 0.015
+      5: 0.02
+      6: 0.03
+      7: 0.03
+      8: 0.03
+      9: 0.02
+      10: 0.01
+      11: 0.01
+      12: 0.01
+
+# recurs eòlic
+wind_weibull:
+  1:  {k: 2.0, c: 7.3}
+  2:  {k: 2.0, c: 7.6}
+  3:  {k: 2.0, c: 7.8}
+  4:  {k: 2.0, c: 8.1}
+  5:  {k: 2.0, c: 8.2}
+  6:  {k: 2.0, c: 8.0}
+  7:  {k: 2.0, c: 7.6}
+  8:  {k: 2.0, c: 7.5}
+  9:  {k: 2.0, c: 7.4}
+  10: {k: 2.0, c: 7.7}
+  11: {k: 2.0, c: 7.6}
+  12: {k: 2.0, c: 7.3}
+

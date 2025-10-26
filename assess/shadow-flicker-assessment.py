@@ -8,6 +8,9 @@ SOL per turbina (opcional), tall 10×D, tolerància azimutal.
 
 import os, math, time, yaml, argparse, sys, json, csv, datetime as dt
 from collections import defaultdict, deque
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing as mp
+import platform
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -23,7 +26,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 try:
-    from numba import njit
+    from numba import njit, prange
 except Exception:
     def njit(*args, **kwargs):
         def wrap(f): return f
@@ -36,6 +39,9 @@ def _num(x, default=None):
         return float(x)
     except (TypeError, ValueError):
         return default
+
+def norm_name(s): 
+    return str(s).strip().upper()
 
 def make_time_index_utc(year: int, step_min: int = 1) -> pd.DatetimeIndex:
     """Index continu en UTC per a tot l'any [inici, any+1)."""
@@ -131,21 +137,25 @@ def load_config(yaml_args, g: dict):
         g["DAILY_LIMIT_MIN"]   = _num(sf.get("daily_limit_min"), 30.0)
         # (Opcional) altres paràmetres que tinguis al bloc:
         if (yaml_args.fast and (yaml_args.fast.upper() == "Y" or yaml_args.fast.upper() == "YES")):
-            g["GRID_STEP_M"]  = 50.0
+            g["GRID_STEP_M"]  = 25.0
             g["H_REC_RASTER"] = 2.0
-            g["TIME_STEP_MIN"] = 10.0
-            g["RASTER_TOL_M"] = 0.5            
+            g["TIME_STEP_MIN"] = 5.0
+            g["RASTER_TOL_M"] = 1.0 
+            g["MAX_CHECKS_STEP"] = 4000
+            g["N_SAMP_PER_KM"] = 60
         else:
-            g["GRID_STEP_M"]  = _num(sf.get("grid_step_m"), g.get("GRID_STEP_M", 25.0))
-            g["H_REC_RASTER"] = _num(sf.get("h_rec_raster_m"), g.get("H_REC_RASTER", 2.0))
-            g["TIME_STEP_MIN"] = _num(sf.get("time_step_min"), g.get("TIME_STEP_MIN", 10.0))
-            g["RASTER_TOL_M"] = _num(sf.get("raster_tol_m"), g.get("RASTER_TOL_M", 0.5))
+            g["GRID_STEP_M"]  = _num(sf.get("grid_step_m"), g.get("GRID_STEP_M"))
+            g["H_REC_RASTER"] = _num(sf.get("h_rec_raster_m"), g.get("H_REC_RASTER"))
+            g["TIME_STEP_MIN"] = _num(sf.get("time_step_min"), g.get("TIME_STEP_MIN"))
+            g["RASTER_TOL_M"] = _num(sf.get("raster_tol_m"), g.get("RASTER_TOL_M"))
+            g["MAX_CHECKS_STEP"] = _num(sf.get("max_checks_step"), g.get("MAX_CHECKS_STEP"))
+            g["N_SAMP_PER_KM"] = _num(sf.get("n_samp_per_km"), g.get("N_SAMP_PER_KM"))
 
     # ---- TURBINES (llista i índex per id) ----
     legacy = []
     turbine_by_id = {}
     for t in cfg.get("turbines", []):
-        tid   = str(t["id"])
+        tid   = norm_name(str(t["id"]))
         x     = _num(t.get("x"))
         y     = _num(t.get("y"))
         lat   = _num(t.get("lat"))
@@ -200,8 +210,6 @@ TZ_LOCAL = ZoneInfo("Europe/Madrid")
 # Llindars (bones pràctiques europees)
 MAX_MIN_PER_DAY = 30.0  # minuts/dia (p.ex. criteri alemany)
 
-
-
 # Àmbit cartogràfic (UTM)
 XMIN, YMIN, XMAX, YMAX = 344500, 4595500, 353500, 4600500
 
@@ -216,14 +224,25 @@ SITE_LAT, SITE_LON = 41.515244, 1.194816
 
 TURBINE_DATA_STRUCT= [("name", "xUTM", "yUTM", "lat", "lon", "plat_h", "hub_h", "rotor_d", "shade_corr", "cut_in", "cut_out", "model", "powerMW")]
 
-TURBINES = [
-    ("YA3", 347327, 4598444, 41.52286141, 1.170478, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
-    ("Y09", 348363, 4598715, 41.525559, 1.182837, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
-    ("Y05", 348718, 4598000, 41.519005, 1.186957, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
-    ("Y06", 349377, 4597537, 41.515277, 1.194854, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
-    ("Y07", 350011, 4597190, 41.512064, 1.202922, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
-    ("Y8B", 350526, 4596948, 41.510136, 1.209102, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
-]
+TURBINES = []
+#    ("YA3", 347327, 4598444, 41.52286141, 1.170478, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
+#    ("Y09", 348363, 4598715, 41.525559, 1.182837, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
+#    ("Y05", 348718, 4598000, 41.519005, 1.186957, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
+#    ("Y06", 349377, 4597537, 41.515277, 1.194854, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
+#    ("Y07", 350011, 4597190, 41.512064, 1.202922, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
+#    ("Y8B", 350526, 4596948, 41.510136, 1.209102, 2.0, 112.0, 172.0, 0.485, 3.0, 25.0, "N175/6.0x", 6.23),
+#]
+
+# Caché local per horitzons (independent a cada procés)
+HORIZON_CACHE = {}
+
+def get_horizon_for(tname, tx, ty, rotor_shade_h):
+    key = norm_name(tname)
+    H = HORIZON_CACHE.get(key)
+    if H is None:
+        H = build_horizon_table(tx, ty, DEM_Z, TA, TB, TC, TD, TE, TF, rotor_shade_h=rotor_shade_h)
+        HORIZON_CACHE[key] = H
+    return H
 
 USE_PER_TURBINE_SUNPOS = True
 
@@ -254,7 +273,11 @@ TIME_STEP_MIN = 10.0            # puja a 5–10 min si vols calcular més ràpid
 GRID_STEP_M   = 50.0           # pas del raster XY, 25 millor, 50 per proves
 H_REC_RASTER  = 2.0            # alçada del receptor “raster” (mapa d’envolvent)
 RASTER_TOL_M       = 0.5     # tolerància d'excedència (impuresa) DEM per línia SOL→píxel (m)
+MAX_CHECKS_STEP = 4000
+N_SAMP_PER_KM = 48
 
+# Precalc of turbine horizons
+HORIZON = {}
 # Tolerància azimutal (Sol entre turbina i receptor)
 # TOL_AZ_DEG = 11.0 available for SCENE CONFIG now
 
@@ -620,21 +643,6 @@ def _dem_bilinear_scalar(Z, x, y, TA, TB, TC, TD, TE, TF):
     z1 = z10*(1.0-ty) + z11*ty
     return float(z0*(1.0-tx) + z1*tx)
 
-def _dem_bilinear_scalar_old(Z, x, y, TA, TB, TC, TD, TE, TF):
-    col = (x - TC) / TA
-    row = (y - TF) / TE
-    r0 = int(math.floor(row)); c0 = int(math.floor(col))
-    r1 = r0 + 1; c1 = c0 + 1
-    if r0 < 0: r0 = 0
-    if c0 < 0: c0 = 0
-    if r1 >= Z.shape[0]: r1 = Z.shape[0]-1
-    if c1 >= Z.shape[1]: c1 = Z.shape[1]-1
-    fr = row - r0; fc = col - c0
-    z00 = Z[r0, c0]; z10 = Z[r1, c0]; z01 = Z[r0, c1]; z11 = Z[r1, c1]
-    z0 = z00*(1.0-fr) + z10*fr
-    z1 = z01*(1.0-fr) + z11*fr
-    return z0*(1.0-fc) + z1*fc
-
 @njit(cache=True, fastmath=True)
 def _terrain_screen_ok_path_raster(tx, ty, px, py, elev_deg, rec_h_m,
                             Z, TA, TB, TC, TD, TE, TF,
@@ -659,14 +667,14 @@ def _terrain_screen_ok_path_raster(tx, ty, px, py, elev_deg, rec_h_m,
                 return False
     return (max_ex <= tol_m)
 
-@njit(cache=True, fastmath=True, parallel=False)
+@njit(cache=True, fastmath=True, parallel=True)
 def terrain_screen_ok_batch(tx, ty, elev_deg, rec_h_m,
                             rows, cols, XX, YY,
                             Z, TA, TB, TC, TD, TE, TF,
                             n_samp_per_km, tol_m):
     
     out = np.zeros(rows.shape[0], dtype=np.uint8)
-    for k in range(rows.shape[0]):
+    for k in prange(rows.shape[0]): # en paral·lel amb prange
         ri = int(rows[k]); ci = int(cols[k])
         px = float(XX[ri, ci]); py = float(YY[ri, ci])
         ok = _terrain_screen_ok_path_raster(tx, ty, px, py, elev_deg, rec_h_m,
@@ -789,7 +797,7 @@ TARGET_MS_PER_TURB = 12.0
 def _new_timing_bucket():
     return {"total_calls":0, "total_ms":0.0, "per_turb":{}, "per_step":[]}
 
-def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, h_rec_raster,
+def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, dt_min, h_rec_raster,
                                      tx, ty, max_sf_dist, rotor_shade_h, rotor_tol_deg=8.0,
                                      n_samp_per_km=48, tol_m=0.5,
                                      max_checks_per_step=4000,
@@ -800,7 +808,8 @@ def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, h_rec_raster,
     DX = XX - tx; DY = YY - ty
     dist_h = np.hypot(DX, DY)
     az_rt  = (np.degrees(np.arctan2(DX, DY)) % 360.0 + 360.0) % 360.0
-    L = (rotor_shade_h - h_rec_raster) / max(np.tan(np.radians(max(elev, 0.1))), 1e-6)
+    L = (rotor_shade_h - h_rec_raster) / max(np.tan(np.radians(elev)), 1e-6)
+    #L = (rotor_shade_h - h_rec_raster) / max(math.tan(math.radians(elev)), 1e-6)
 
     mask_cand = (
         (dist_h <= min(L, max_sf_dist)) &
@@ -834,9 +843,10 @@ def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, h_rec_raster,
     if np.any(ok_mask):
         rr = rows_sel[ok_mask.astype(bool)]
         cc = cols_sel[ok_mask.astype(bool)]
-        #acc_min[rr, cc] += TIME_STEP_MIN * w
-        #if daily_hit_mask is not None:
-        #    daily_hit_mask[rr, cc] = True
+        # acc_min[rr, cc] += TIME_STEP_MIN * w        
+        acc_min[rr, cc] += dt_min * w
+        if daily_hit_mask is not None:
+            daily_hit_mask[rr, cc] = True
         updated = rr.size
 
     elapsed = (time.perf_counter() - t0)*1000.0
@@ -915,7 +925,61 @@ SCENARIOS = {
     },
 }
 
+def build_horizon_table(tx, ty, Z, TA, TB, TC, TD, TE, TF,
+                        bearings=np.arange(0,360,2),
+                        max_dist_m=3000.0, step_m=25.0,
+                        rotor_shade_h=200.0):
+    """Retorna dict: bearing (deg) -> elevació mínima del sol (deg) per “veure” per sobre del terreny."""
+    z_t = _dem_bilinear_scalar(Z, tx, ty, TA, TB, TC, TD, TE, TF) + rotor_shade_h
+    out = {}
+    for b in bearings:  # 0=N, 90=E
+        rad = math.radians(b)
+        max_ang = -90.0
+        d = step_m
+        while d <= max_dist_m:
+            x = tx + math.sin(rad)*d
+            y = ty + math.cos(rad)*d
+            z = _dem_bilinear_scalar(Z, x, y, TA, TB, TC, TD, TE, TF)
+            ang = math.degrees(math.atan2(z - z_t, d))
+            if ang > max_ang: max_ang = ang
+            d += step_m
+        out[float(b)] = float(max_ang)  # requeriment mínim d’elevació solar
+    return out
+
+def interp_horizon(bearing_deg, Htable):
+    # interpola circularment cada 2°
+    b = (bearing_deg % 360.0)
+    b0 = 2.0*math.floor(b/2.0)
+    b1 = (b0 + 2.0) % 360.0
+    t = (b - b0) / 2.0
+    def get(key):
+        return Htable.get(key, Htable.get((key+360)%360, -90.0))
+    return (1.0 - t)*get(b0) + t*get(b1)
+
+def quick_terrain_clear(tx, ty, px, py, elev_deg, Htable, margin_deg=0.5):
+    """Accepta ràpid si l’alçada solar supera l’horitzó en el rumb turbina→punt."""
+    bearing = (math.degrees(math.atan2(px - tx, py - ty)) + 360.0) % 360.0
+    h_req = interp_horizon(bearing, Htable)
+    return elev_deg >= (h_req - margin_deg)
+
+
+def next_step_minutes(elev_deg: float) -> float:
+    # Tall LAI/central: <3° → podem saltar ràpid
+    step_minutes = TIME_STEP_MIN 
+    if elev_deg < 3.0:  step_minutes =  5.0
+    if elev_deg < 5.0: step_minutes = 4.0
+    if elev_deg < 10.0: step_minutes = 3.0
+    if elev_deg < 15.0: step_minutes = 2.0
+    #if elev_deg < 20.0: step_minutes = 2.0
+    if (step_minutes >= TIME_STEP_MIN):
+        return step_minutes
+    else:
+        return TIME_STEP_MIN
+
+
 # ---------- (8) Càlcul principal ----------
+# No utilitzat. Ho fem via multi-core ara.
+# compute_shadow_flicker_month substitueix aquesta rutina
 def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
                            max_checks_per_step=4000):
     
@@ -935,10 +999,11 @@ def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
     xx = np.arange(XMIN, XMAX+GRID_STEP_M, GRID_STEP_M)
     yy = np.arange(YMIN, YMAX+GRID_STEP_M, GRID_STEP_M)
     XX, YY = np.meshgrid(xx, yy)
-    acc_min_grid  = np.zeros_like(XX, dtype=float)
+    # acc_min_grid  = np.zeros_like(XX, dtype=float)
+    acc_min_grid  = np.zeros_like(XX, dtype=np.float32)  # minuts
     acc_days_grid = np.zeros_like(XX, dtype=np.uint16)
     daily_hit_mask = np.zeros_like(XX, dtype=bool)
-
+    
     # Receptors acumuladors
     keyTR = defaultdict(float)
     keyR  = defaultdict(float)
@@ -958,12 +1023,13 @@ def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
     step = dt.timedelta(minutes=TIME_STEP_MIN)
 
     current_day = None
-
+    
     def flush_day():
         for rid, flag in list(hit_today_R.items()):
             if flag:
                 acc_days_R[rid] += 1
                 hit_today_R[rid] = False
+                
         acc_days_grid[:] += daily_hit_mask.astype(np.uint16)
         daily_hit_mask[:] = False
 
@@ -982,10 +1048,13 @@ def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
         m = t.month
         # Sol global (referència)
         elev_g, az_g = solar_pos_utc(t, SITE_LAT, SITE_LON)
+        dt_min = next_step_minutes(elev_g)  # minuts del pas actual
+
         # 0.5 to low check if this is ok, probably has to be something like 2.5 as intensity is higher in Catalonia (Germany 3.0)
         # We leave it to 3º of elevation to assure standards
         if elev_g < MIN_ELEV: 
-            t += step
+            t += dt.timedelta(minutes=dt_min)
+            #t += step
             continue
 
         # --- RECEPTORS ---
@@ -1035,10 +1104,9 @@ def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
                     
                     
                 # Clip i sanity check
-                #if not np.isfinite(w_base): 
-                #    w_base = 0.0
-                        
-                #w_base = max(0.0, min(1.0, float(w_base)))
+                if not np.isfinite(w_base): 
+                    w_base = 0.0                        
+                w_base = max(0.0, min(1.0, float(w_base)))
                 
                 # Abast vertical
                 L = (rotor_shade_h - hrec) / max(math.tan(math.radians(elev_t)), 1e-6)
@@ -1052,86 +1120,92 @@ def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
 
                 # DEM screening
                 if use_screen:
-                    if not _terrain_screen_ok_path(tx, ty, rx, ry, elev_t, hrec,
-                                                   DEM_Z, TA, TB, TC, TD, TE, TF,
-                                                   n_samp_per_km, RASTER_TOL_M):
+                    H = get_horizon_for(tname, tx, ty, rotor_shade_h)                    
+                    if not quick_terrain_clear(tx, ty, rx, ry, elev_t, H):
                         continue
-                minutes_w = TIME_STEP_MIN if IS_WORST else TIME_STEP_MIN * w_base
+                    #if not _terrain_screen_ok_path(tx, ty, rx, ry, elev_t, hrec,
+                    #                               DEM_Z, TA, TB, TC, TD, TE, TF,
+                    #                               n_samp_per_km, RASTER_TOL_M):
+                    #    continue
+                        
+                # minutes_w = TIME_STEP_MIN if IS_WORST else TIME_STEP_MIN * w_base
+                minutes_w = dt_min if IS_WORST else dt_min * w_base
                 if minutes_w > 0:
                     step_w_R[rid] = max(step_w_R[rid], (1.0 if IS_WORST else w_base))
                     hit_today_R[rid]     = True
 
         # --- RASTER ---
         # per a cada turbina
-        if True:
-            step_elapsed_sum = 0.0
-            max_checks_dyn = max_checks_per_step
-            
-            step_w_grid = np.zeros_like(XX, dtype=float)
+        step_elapsed_sum = 0.0
+        max_checks_dyn = max_checks_per_step
 
-            for (tname, tx, ty, lat, lon, plat_h, hub_h, rotor_d, shade_corr, cut_in, cut_out, model, power) in TURBINES:
-                rotor_shade_h = hub_h + plat_h + (rotor_d * shade_corr)
-                max_sf_dist = 10 * rotor_d
-                # Sol per turbina? Absurd, overkill
-                if USE_PER_TURBINE_SUNPOS:
-                    lat_t, lon_t = lat, lon
-                    elev_t, az_t = solar_pos_utc(t, lat_t, lon_t)
-                    if elev_t <= MIN_ELEV:
-                        continue
-                else:
-                    elev_t, az_t = elev_g, az_g
+        step_w_grid = np.zeros_like(XX, dtype=float)
 
-                w_eff_grid = 1.0
-                if IS_WORST:
-                    sun = 1.0
-                    avail = 1.0
-                    curt = 1.0
-                    ilum_w = 1.0
-                    wind = 1.0
-                    weibull = 1.0
-                else:
-                    # Pes temporal
-                    sun   = sun_frac_fn(m)
-                    avail = avail_fn(m)
-                    curt  = curt_fn(m)
-                    weibull = wind_oper_prob_month(m, cut_in, cut_out)
-                    # suficent potència? Ha de ser >= 120 W/m2 en funció de la elevació 
-                    illum_w = elev_min_deg_for_ghi_watts(elev_t) #sun_effective_LAI(elev_t)
+        for (tname, tx, ty, lat, lon, plat_h, hub_h, rotor_d, shade_corr, cut_in, cut_out, model, power) in TURBINES:
+            rotor_shade_h = hub_h + plat_h + (rotor_d * shade_corr)
+            max_sf_dist = 10 * rotor_d
+            # Sol per turbina? Absurd, overkill
+            if USE_PER_TURBINE_SUNPOS:
+                lat_t, lon_t = lat, lon
+                elev_t, az_t = solar_pos_utc(t, lat_t, lon_t)
+                if elev_t <= MIN_ELEV:
+                    continue
+            else:
+                elev_t, az_t = elev_g, az_g
 
-                    if use_dir: # and establish not worst if necessary
-                        wind = wind_dir_yaw(m, sector_of_az(az_t), 0.3) 
+            w_eff_grid = 1.0
+            if IS_WORST:
+                sun = 1.0
+                avail = 1.0
+                curt = 1.0
+                ilum_w = 1.0
+                wind = 1.0
+                weibull = 1.0
+            else:
+                # Pes temporal
+                sun   = sun_frac_fn(m)
+                avail = avail_fn(m)
+                curt  = curt_fn(m)
+                weibull = wind_oper_prob_month(m, cut_in, cut_out)
+                # suficent potència? Ha de ser >= 120 W/m2 en funció de la elevació 
+                illum_w = elev_min_deg_for_ghi_watts(elev_t) #sun_effective_LAI(elev_t)
 
-                        
-                    w_eff_grid = sun * avail * curt * weibull * wind * illum_w
-                    
-                # Clip i sanity check
-                if not np.isfinite(w_eff_grid): 
-                    w_eff_grid = 0.0
-                w_eff_grid = max(0.0, min(1.0, float(w_eff_grid)))                
-                    
-                elapsed_ms, max_checks_dyn, updated, rr, cc = raster_step_with_screening_numba(
-                    XX, YY, acc_min_grid,
-                    elev=elev_t, az=az_t, w=w_eff_grid,
-                    h_rec_raster=H_REC_RASTER, tx=tx, ty=ty, max_sf_dist=max_sf_dist, rotor_shade_h=rotor_shade_h,
-                    rotor_tol_deg=tol_azdeg, n_samp_per_km=n_samp_per_km, tol_m=RASTER_TOL_M,
-                    max_checks_per_step=max_checks_dyn,
-                    timing_bucket=timing, tname=tname, throttle=True,
-                    daily_hit_mask=daily_hit_mask
-                )
-                # Un cop tens rr,cc per la turbina corrent:
-                if rr.size:
-                    step_w_grid[rr, cc] = np.maximum(step_w_grid[rr, cc], (1.0 if IS_WORST else w_eff_grid))
-                    daily_hit_mask[rr, cc] = True  # dies afectats segueix essent unió                
+                if use_dir: # and establish not worst if necessary
+                    wind = wind_dir_yaw(m, sector_of_az(az_t), 0.3) 
+
+                w_eff_grid = sun * avail * curt * weibull * wind * illum_w
+
+            # Clip i sanity check
+            if not np.isfinite(w_eff_grid): 
+                w_eff_grid = 0.0
+            w_eff_grid = max(0.0, min(1.0, float(w_eff_grid)))                
+
+            elapsed_ms, max_checks_dyn, updated, rr, cc = raster_step_with_screening_numba(
+                XX, YY, acc_min_grid,
+                elev=elev_t, az=az_t, w=w_eff_grid, dt_min=dt_min,
+                h_rec_raster=H_REC_RASTER, tx=tx, ty=ty, max_sf_dist=max_sf_dist, rotor_shade_h=rotor_shade_h,
+                rotor_tol_deg=tol_azdeg, n_samp_per_km=n_samp_per_km, tol_m=RASTER_TOL_M,
+                max_checks_per_step=max_checks_dyn,
+                timing_bucket=timing, tname=tname, throttle=True,
+                daily_hit_mask=daily_hit_mask
+            )
+            # Un cop tens rr,cc per la turbina corrent:
+            #if rr.size:
+            #    step_w_grid[rr, cc] = np.maximum(step_w_grid[rr, cc], (1.0 if IS_WORST else w_eff_grid))
+            #    daily_hit_mask[rr, cc] = True  # dies afectats segueix essent unió                
+
+            step_elapsed_sum += elapsed_ms
+
+        if ENABLE_TIMING and timing is not None:
+            timing["per_step"].append(step_elapsed_sum)
+
+        # update turbine minutes for raster steps 
+        #acc_min_grid += TIME_STEP_MIN * step_w_grid
+        #for rid, wmax in step_w_R.items():
                 
-                step_elapsed_sum += elapsed_ms
-            
-            # update turbine minutes for raster steps 
-            acc_min_grid += TIME_STEP_MIN * step_w_grid
-            if ENABLE_TIMING and timing is not None:
-                timing["per_step"].append(step_elapsed_sum)
-
         for rid, wmax in step_w_R.items():
-            minutes_w = TIME_STEP_MIN * wmax
+            #minutes_w = TIME_STEP_MIN * wmax
+            minutes_w = dt_min * wmax
             keyTR[(tname, rid)] += minutes_w
             keyR[rid]           += minutes_w
             acc_min_R[rid]      += minutes_w
@@ -1193,11 +1267,403 @@ def compute_shadow_flicker(scen_name, bbox=None, grid=True, n_samp_per_km=48,
         "receptors_min": acc_min_R,                 # minuts/any per receptor
         "receptors_days": acc_days_R,               # dies/any per receptor
         "receptors_mpd": minutes_per_day_R,         # minuts/dia (mitjana) per receptor
-        "keyTR": keyTR, "keyR": keyR,
+        "keyTR": keyTR, 
+        "keyR": keyR,
         "over30_days_R": dict(over30_days_R),
         "max_day_min_R": dict(max_day_min_R),
         "max_day_date_R": {k: v.isoformat() for k, v in max_day_date_R.items()},        
     }
+
+# ---------- Multi Processor -----------
+def compute_shadow_flicker_month(scen_name, month, args,
+                                 n_samp_per_km=48, max_checks_per_step=4000):
+    
+    cfg = load_config(args, globals())
+    
+    IS_WORST = (scen_name == "WORST")
+    
+    params = SCENARIOS[scen_name]
+
+    sun_frac_fn = params["sun_frac"]
+    avail_fn    = params["avail_fn"]
+    curt_fn     = params["curt_fn"]
+    use_screen  = params["terrain_screen"]
+    use_dir     = params["use_dir"]
+    tol_azdeg   = params["tol_azdeg"]
+    
+    
+    # prepara XX,YY, acumuladors (idèntics en forma i dtype a l’anual)
+    xmin, ymin, xmax, ymax = XMIN, YMIN, XMAX, YMAX
+    
+    # original year run next two lines different
+    #xx = np.arange(XMIN, XMAX+GRID_STEP_M, GRID_STEP_M)
+    #yy = np.arange(YMIN, YMAX+GRID_STEP_M, GRID_STEP_M)
+    
+    xx = np.arange(xmin, xmax+GRID_STEP_M*0.5, GRID_STEP_M)
+    yy = np.arange(ymin, ymax+GRID_STEP_M*0.5, GRID_STEP_M)
+    XX, YY = np.meshgrid(xx, yy)
+    acc_min_grid  = np.zeros_like(XX, dtype=np.float32)
+    acc_days_grid = np.zeros_like(XX, dtype=np.uint16)
+    daily_hit_mask = np.zeros_like(XX, dtype=bool)
+
+    # next two line original year run
+    keyTR = defaultdict(float)
+    keyR  = defaultdict(float)
+
+    acc_min_R   = defaultdict(float)
+    acc_days_R  = defaultdict(int)
+    hit_today_R = defaultdict(bool)
+    acc_min_day_R = defaultdict(float)  # (rid, date) -> minuts
+
+    # next line original year run
+    step_w_R = defaultdict(float)  # rid -> w màxim del minut
+    
+    # Timing
+    timing = _new_timing_bucket() if ENABLE_TIMING else None
+
+    # timeline del mes
+    m = int(month)
+    t0 = dt.datetime(YEAR, m, 1, 0, 0, tzinfo=dt.timezone.utc)
+    # final del mes
+    if m == 12:
+        t1 = dt.datetime(YEAR, 12, 31, 23, 59, tzinfo=dt.timezone.utc)
+    else:
+        t1 = dt.datetime(YEAR, m+1, 1, 0, 0, tzinfo=dt.timezone.utc) - dt.timedelta(minutes=1)
+        
+    step = dt.timedelta(minutes=TIME_STEP_MIN)
+
+    current_day = None
+        
+    def flush_day():
+        for rid, flag in list(hit_today_R.items()):
+            if flag:
+                acc_days_R[rid] += 1
+                hit_today_R[rid] = False
+                
+        acc_days_grid[:] += daily_hit_mask.astype(np.uint16)
+        daily_hit_mask[:] = False
+ 
+    # Bucle temporal
+    t = t0
+    while t <= t1:
+        day = t.date()
+        if current_day is None:
+            current_day = day
+        elif day != current_day:
+            flush_day()
+            current_day = day
+            
+        step_w_R.clear()
+        
+        m = t.month
+        # Sol global (referència)
+        elev_g, az_g = solar_pos_utc(t, SITE_LAT, SITE_LON)
+        dt_min = next_step_minutes(elev_g)  # minuts del pas actual
+
+        # 0.5 to low check if this is ok, probably has to be something like 2.5 as intensity is higher in Catalonia (Germany 3.0)
+        # We leave it to 3º of elevation to assure standards
+        if elev_g < MIN_ELEV: 
+            t += dt.timedelta(minutes=dt_min)
+            #t += step
+            continue
+
+        # --- RECEPTORS ---
+        for (nuc, rid, rx, ry, hrec) in RPTS:
+            for (tname, tx, ty, lat, lon, plat_h, hub_h, rotor_d, shade_corr, cut_in, cut_out, model, power) in TURBINES:
+                rotor_shade_h = hub_h + plat_h + (rotor_d * shade_corr)
+                max_sf_dist = 10 * rotor_d
+                dx, dy  = tx - rx, ty - ry
+                dist_h  = (dx*dx + dy*dy) ** 0.5
+                if dist_h > max_sf_dist:
+                    continue
+
+                # Sol per turbina? Absurd, overkill
+                if USE_PER_TURBINE_SUNPOS:
+                    lat_t, lon_t = lat, lon
+                    elev_t, az_t = solar_pos_utc(t, lat_t, lon_t)
+                    if elev_t <= MIN_ELEV:
+                        continue
+                else:
+                    elev_t, az_t = elev_g, az_g
+
+                w_base = 1.0                    
+                if IS_WORST:
+                    sun = 1.0
+                    avail = 1.0
+                    curt = 1.0
+                    ilum_w = 1.0
+                    wind = 1.0
+                    weibull = 1.0
+                else:
+                    # Pes temporal
+                    sun   = sun_frac_fn(m)
+                    avail = avail_fn(m)
+                    curt  = curt_fn(m)
+                    weibull = wind_oper_prob_month(m, cut_in, cut_out)
+                    # suficent potència? Ha de ser >= 120 W/m2 en funció de la elevació 
+                    #if elev_t > 70:
+                    #    print("Elev_t: " + str(elev_t))
+                    
+                    illum_w = elev_min_deg_for_ghi_watts(elev_t) #sun_effective_LAI(elev_t)
+                    if use_dir: # and establish not worst if necessary
+                        #sec, sec2 = sector_of_az(az_t)
+                        wind = wind_dir_yaw(m, sector_of_az(az_t), 0.3) 
+                        #wind = wind_dir_yaw(m, sec, sec2)
+                        
+                    w_base = sun * avail * curt * weibull * wind * illum_w
+                    
+                    
+                # Clip i sanity check
+                if not np.isfinite(w_base): 
+                    w_base = 0.0                        
+                w_base = max(0.0, min(1.0, float(w_base)))
+                
+                # Abast vertical
+                L = (rotor_shade_h - hrec) / max(math.tan(math.radians(elev_t)), 1e-6)
+                if dist_h > L:
+                    continue
+
+                # Alineació azimutal
+                az_rt = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+                if abs(((az_rt - az_t + 180.0) % 360.0) - 180.0) > tol_azdeg:
+                    continue
+
+                # DEM screening
+                if use_screen:
+                    H = get_horizon_for(tname, tx, ty, rotor_shade_h)                    
+                    if not quick_terrain_clear(tx, ty, rx, ry, elev_t, H):
+                        continue
+                    #if not _terrain_screen_ok_path(tx, ty, rx, ry, elev_t, hrec,
+                    #                               DEM_Z, TA, TB, TC, TD, TE, TF,
+                    #                               n_samp_per_km, RASTER_TOL_M):
+                    #    continue
+                        
+                # minutes_w = TIME_STEP_MIN if IS_WORST else TIME_STEP_MIN * w_base
+                minutes_w = dt_min if IS_WORST else dt_min * w_base
+                if minutes_w > 0:
+                    step_w_R[rid] = max(step_w_R[rid], (1.0 if IS_WORST else w_base))
+                    hit_today_R[rid]     = True
+
+        # --- RASTER ---
+        # per a cada turbina
+        step_elapsed_sum = 0.0
+        max_checks_dyn = max_checks_per_step
+
+        step_w_grid = np.zeros_like(XX, dtype=float)
+
+        for (tname, tx, ty, lat, lon, plat_h, hub_h, rotor_d, shade_corr, cut_in, cut_out, model, power) in TURBINES:
+            rotor_shade_h = hub_h + plat_h + (rotor_d * shade_corr)
+            max_sf_dist = 10 * rotor_d
+            # Sol per turbina? Absurd, overkill
+            if USE_PER_TURBINE_SUNPOS:
+                lat_t, lon_t = lat, lon
+                elev_t, az_t = solar_pos_utc(t, lat_t, lon_t)
+                if elev_t <= MIN_ELEV:
+                    continue
+            else:
+                elev_t, az_t = elev_g, az_g
+
+            w_eff_grid = 1.0
+            if IS_WORST:
+                sun = 1.0
+                avail = 1.0
+                curt = 1.0
+                ilum_w = 1.0
+                wind = 1.0
+                weibull = 1.0
+            else:
+                # Pes temporal
+                sun   = sun_frac_fn(m)
+                avail = avail_fn(m)
+                curt  = curt_fn(m)
+                weibull = wind_oper_prob_month(m, cut_in, cut_out)
+                # suficent potència? Ha de ser >= 120 W/m2 en funció de la elevació 
+                illum_w = elev_min_deg_for_ghi_watts(elev_t) #sun_effective_LAI(elev_t)
+
+                if use_dir: # and establish not worst if necessary
+                    wind = wind_dir_yaw(m, sector_of_az(az_t), 0.3) 
+
+                w_eff_grid = sun * avail * curt * weibull * wind * illum_w
+
+            # Clip i sanity check
+            if not np.isfinite(w_eff_grid): 
+                w_eff_grid = 0.0
+            w_eff_grid = max(0.0, min(1.0, float(w_eff_grid)))                
+
+            elapsed_ms, max_checks_dyn, updated, rr, cc = raster_step_with_screening_numba(
+                XX, YY, acc_min_grid,
+                elev=elev_t, az=az_t, w=w_eff_grid, dt_min=dt_min,
+                h_rec_raster=H_REC_RASTER, tx=tx, ty=ty, max_sf_dist=max_sf_dist, rotor_shade_h=rotor_shade_h,
+                rotor_tol_deg=tol_azdeg, n_samp_per_km=n_samp_per_km, tol_m=RASTER_TOL_M,
+                max_checks_per_step=max_checks_dyn,
+                timing_bucket=timing, tname=tname, throttle=True,
+                daily_hit_mask=daily_hit_mask
+            )
+            # Un cop tens rr,cc per la turbina corrent:
+            #if rr.size:
+            #    step_w_grid[rr, cc] = np.maximum(step_w_grid[rr, cc], (1.0 if IS_WORST else w_eff_grid))
+            #    daily_hit_mask[rr, cc] = True  # dies afectats segueix essent unió                
+
+            step_elapsed_sum += elapsed_ms
+
+        if ENABLE_TIMING and timing is not None:
+            timing["per_step"].append(step_elapsed_sum)
+
+        # update turbine minutes for raster steps 
+        #acc_min_grid += TIME_STEP_MIN * step_w_grid
+        #for rid, wmax in step_w_R.items():
+                
+        for rid, wmax in step_w_R.items():
+            #minutes_w = TIME_STEP_MIN * wmax
+            minutes_w = dt_min * wmax
+            keyTR[(tname, rid)] += minutes_w
+            keyR[rid]           += minutes_w
+            acc_min_R[rid]      += minutes_w
+            acc_min_day_R[(rid, day)] += minutes_w
+            
+                
+        t += step
+
+    # Flush final
+    if current_day is not None:
+        flush_day()
+
+    # Derivats per receptor: dies amb superació i màxim diari
+    # over30_days_R   = defaultdict(int)     # #dies amb mins >= MAX_MIN_PER_DAY (it's normally 30min + something)
+    # max_day_min_R   = defaultdict(float)   # màxim de minuts en 1 dia
+    # max_day_date_R  = {}                   # data del màxim        
+    
+    # Recorre totes les claus (rid, date)
+    # for (rid, dte), mins in acc_min_day_R.items():
+        # acccumulate using >= as we can suppose that most of the values even when exactly 30min
+        # have a seconds remainder pushing the value over the limit 3min 0sec will be statistically neglectable
+    #    if mins > MAX_MIN_PER_DAY:
+    #        over30_days_R[rid] += 1
+            
+    #    if mins > max_day_min_R[rid]:
+    #        max_day_min_R[rid]  = mins
+    #        max_day_date_R[rid] = dte
+            
+    # Derivats raster: minuts/dia afectat
+    #with np.errstate(divide='ignore', invalid='ignore'):
+    #    minutes_per_day_grid = np.where(acc_days_grid > 0,
+    #                                    acc_min_grid / acc_days_grid,
+    #                                    0.0)
+
+    # Derivats receptors: minuts/dia
+    #minutes_per_day_R = {}
+    #for rid, mins in acc_min_R.items():
+    #    d = acc_days_R.get(rid, 0)
+    #    minutes_per_day_R[rid] = (mins / d) if d > 0 else 0.0
+
+    # Timing resum
+    if ENABLE_TIMING and timing is not None:
+        total_ms = timing["total_ms"]; total_calls = timing["total_calls"]
+        mean_ms_call = (total_ms/total_calls) if total_calls else 0.0
+        mean_ms_step = (sum(timing["per_step"])/len(timing["per_step"])) if timing["per_step"] else 0.0
+        print(f"[{scen_name}] Raster timing: {total_ms:.0f} ms total, {total_calls} calls, "
+              f"{mean_ms_call:.2f} ms/call, {mean_ms_step:.1f} ms/step.")
+        items = [(k, v["ms"], v["calls"]) for k, v in timing["per_turb"].items()]
+        items.sort(key=lambda x: x[1], reverse=True)
+        for (tn, ms, calls) in items[:6]:
+            print(f"   · {tn}: {ms:.0f} ms ({calls} calls, {ms/max(calls,1):.1f} ms/call)")
+
+
+    # … bucle temporal com el teu (amb dt_min adaptatiu),
+    # … p_sol * p_oper * p_dir * p_av * p_cur (CENTRAL) o tot 1.0 (WORST),
+    # … quick_terrain_clear abans del ray-tracing,
+    # … suma a receptors i raster.
+
+    # al canviar de dia, fes flush com fas a l’anual
+    # al final, calcula minutes_per_day_grid i minutes_per_day_R del mes (opcional)
+
+    # retorna parcial (mateixa clau que fas servir després):
+    return {
+        "XX":XX, "YY":YY,
+        "acc_min_grid": acc_min_grid,
+        "acc_days_grid": acc_days_grid,
+        "receptors_min": dict(acc_min_R),
+        "receptors_days": dict(acc_days_R),
+        #"keyTR": dict(keyTR), 
+        #"keyR": dict(keyR),        
+        "acc_min_day_R": { (rid, d): acc_min_day_R[(rid,d)] for (rid,d) in acc_min_day_R },
+    }
+
+
+def merge_month_results(partials):
+    # Assumim mateixa malla en tots
+    XX = partials[0]["XX"]; YY = partials[0]["YY"]
+    acc_min_grid  = np.zeros_like(XX, dtype=np.float32)
+    acc_days_grid = np.zeros_like(XX, dtype=np.uint16)
+    receptors_min = defaultdict(float)
+    receptors_days= defaultdict(int)
+    acc_min_day_R = defaultdict(float)
+    #keyTR = defaultdict(float)
+    #keyR  = defaultdict(float)
+
+    for p in partials:
+        acc_min_grid  += p["acc_min_grid"].astype(np.float32)
+        acc_days_grid += p["acc_days_grid"].astype(np.uint16)
+        for rid, v in p["receptors_min"].items():
+            receptors_min[rid] += float(v)
+        for rid, v in p["receptors_days"].items():
+            receptors_days[rid] += int(v)
+        for key, v in p["acc_min_day_R"].items():
+            acc_min_day_R[key] += float(v)
+            
+        # do we need those bellow?   
+        #keyTR[(tname, rid)] += minutes_w
+        #keyR[rid]           += minutes_w
+            
+            
+
+    return XX, YY, acc_min_grid, acc_days_grid, receptors_min, receptors_days, acc_min_day_R
+
+def compute_shadow_flicker_multiproc(scen_name, args, workers=None, n_samp_per_km=48, max_checks_per_step=4000):
+    workers = workers or os.cpu_count()
+    
+    cfg = load_config(args, globals())    
+
+    parts = []
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(compute_shadow_flicker_month, scen_name, m, args, n_samp_per_km=n_samp_per_km, max_checks_per_step=max_checks_per_step): m for m in range(1,13)}
+        for fut in as_completed(futs):
+            parts.append(fut.result())
+
+    XX, YY, acc_min_grid, acc_days_grid, receptors_min, receptors_days, acc_min_day_R = merge_month_results(parts)
+
+    # Derivats finals
+    with np.errstate(divide='ignore', invalid='ignore'):
+        minutes_per_day_grid = np.where(acc_days_grid>0, acc_min_grid/acc_days_grid, 0.0)
+    minutes_per_day_R = {}
+    for rid, mins in receptors_min.items():
+        d = receptors_days.get(rid, 0)
+        minutes_per_day_R[rid] = (mins/d) if d>0 else 0.0
+
+    # Checks 30 min/dia
+    over30_days_R = defaultdict(int)
+    max_day_min_R = defaultdict(float)
+    max_day_date_R= {}
+    for (rid, dte), mins in acc_min_day_R.items():
+        if mins > MAX_MIN_PER_DAY:
+            over30_days_R[rid] += 1
+        if mins > max_day_min_R[rid]:
+            max_day_min_R[rid]  = mins
+            max_day_date_R[rid] = dte
+
+    return {
+        "XX":XX, "YY":YY,
+        "acc_min_grid": acc_min_grid,
+        "acc_days_grid": acc_days_grid,
+        "minutes_per_day_grid": minutes_per_day_grid,
+        "receptors_min": dict(receptors_min),
+        "receptors_days": dict(receptors_days),
+        "receptors_mpd": minutes_per_day_R,
+        "over30_days_R": dict(over30_days_R),
+        "max_day_min_R": dict(max_day_min_R),
+        "max_day_date_R": {k: v.isoformat() for k, v in max_day_date_R.items()},
+    }
+
 
 # ---------- (9) Plot helpers ----------
 def colormap_hours():
@@ -1333,10 +1799,15 @@ def draw_turbines_and_receptors(ax, turbines, receptors, res, mode,
             
 def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     XX, YY = res["XX"], res["YY"]
+    # assure to assign the correct output data to isometric coloring on DEM
     H = res["acc_min_grid"]/60.0   # hores/any
     D = res["acc_days_grid"].astype(float)
     MPD = res["minutes_per_day_grid"]
+    #H = res["minutes_per_day_grid"] * 365 / 60.0   # hores/any
 
+    # print(res["acc_min_grid"])
+    # print(res["minutes_per_day_grid"])
+    
     fig, ax = plt.subplots(1,1, figsize=(12,6), constrained_layout=True)
     fig.suptitle(f"{title_prefix} – hores/any")
 
@@ -1369,7 +1840,7 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     draw_dem_hillshade(ax, alpha_hs=0.9, alpha_dem=0.35)
         
     b,cmap,norm = colormap_days()
-    cf1 = ax.contourf(XX, YY, H, levels=b, alpha=0.35, cmap=cmap, norm=norm)
+    cf1 = ax.contourf(XX, YY, D, levels=b, alpha=0.35, cmap=cmap, norm=norm)
     #cfc1 = ax.contour(XX, YY, H, levels=[8], colors="#d62728", linewidths=1.0)
 
 
@@ -1396,7 +1867,7 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     draw_dem_hillshade(ax, alpha_hs=0.9, alpha_dem=0.35)  
         
     b,cmap,norm = colormap_minuts()
-    cf2 = ax.contourf(XX, YY, H, levels=b, alpha=0.35, cmap=cmap, norm=norm)
+    cf2 = ax.contourf(XX, YY, MPD, levels=b, alpha=0.35, cmap=cmap, norm=norm)
     #cfc2 = ax.contour(XX, YY, H, levels=[30], colors="#d62728", linewidths=1.0)
 
     cbar2 = plt.colorbar(cf2, ax=ax, ticks=[5, 15, 25, 45, 75, 105 , 415])
@@ -1434,8 +1905,33 @@ def prepare_csv(scen_name, res):
                         ["Nucli","ReceptorID","X","Y","h_rec(m)","Hores_any","Dies_afectats","Minuts/dia(mitjana)",
                         f"Dies>{int(MAX_MIN_PER_DAY)}min","Max_min_dia","Data_max_dia"],
                         rows, scen_name)
-    
+
 # ---------- (10) Exemple d’ús ----------
+def get_optimal_workers():
+    """
+    Retorna un nombre de workers òptim segons la màquina:
+    - Apple Silicon (M1/M2): limita a 4 (nuclis performance).
+    - Altres: num. nuclis físics, com a mínim 2.
+    """
+    system = platform.system()
+    machine = platform.machine().lower()
+    cpu_count = mp.cpu_count()
+
+    if system == "Darwin" and ("arm" in machine or "apple" in machine):
+        # Apple Silicon → 4 nuclis potents
+        return min(4, cpu_count)
+    else:
+        # En altres sistemes: fem servir nuclis físics si es pot
+        try:
+            import psutil
+            physical = psutil.cpu_count(logical=False)
+            if physical:
+                return max(2, physical)
+        except ImportError:
+            pass
+        return max(2, cpu_count)
+
+
 def run_all():
     parser = argparse.ArgumentParser(
         description="Shadow Flicker Assessment"
@@ -1463,17 +1959,22 @@ def run_all():
     if OUTPUT_DIR:
         ensure_output_dir(OUTPUT_DIR)        
     
+    # Determinar quins nuclis són realment per processing
+    workers = get_optimal_workers()
+    
     if (args.scene == None or args.scene.upper() == "WORST"):
         # WORST (astronòmic)
-        res_worst = compute_shadow_flicker("WORST")
+        #res_worst = compute_shadow_flicker("WORST", None, True, N_SAMP_PER_KM, MAX_CHECKS_STEP)
+        res_worst = compute_shadow_flicker_multiproc("WORST", args, workers, N_SAMP_PER_KM, MAX_CHECKS_STEP)
         plot_all_maps(res_worst, title_prefix="WORST (astronòmic, amb DEM)", file_suffix=f"WORST_{EXPORT_SUFFIX}")
         prepare_csv("WORST", res_worst)
 
     # REALISTIC (realistic)
     if (args.scene == None or args.scene.upper() == "REAL"):    
-        res_cent = compute_shadow_flicker("REALISTIC")
-        plot_all_maps(res_cent, title_prefix="REALISTIC (probable, amb DEM)", file_suffix=f"REALISTIC_{EXPORT_SUFFIX}")
-        prepare_csv("REALISTIC", res_cent)
+        #res_real = compute_shadow_flicker("REALISTIC", None, True, N_SAMP_PER_KM, MAX_CHECKS_STEP)
+        res_real = compute_shadow_flicker_multiproc("REALISTIC", args, workers, N_SAMP_PER_KM, MAX_CHECKS_STEP)
+        plot_all_maps(res_real, title_prefix="REALISTIC (probable, amb DEM)", file_suffix=f"REALISTIC_{EXPORT_SUFFIX}")
+        prepare_csv("REALISTIC", res_real)
 
 # Descomenta per executar en el teu entorn:
 if __name__ == "__main__":
