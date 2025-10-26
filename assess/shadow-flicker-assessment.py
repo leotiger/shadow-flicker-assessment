@@ -18,6 +18,7 @@ from matplotlib.colors import ListedColormap, BoundaryNorm
 import rasterio
 from rasterio.transform import Affine
 import rasterio.transform
+from dataclasses import dataclass
 from shapely.geometry import Point, box, Polygon, MultiPolygon, shape
 from typing import Dict, Any, List, Tuple
 from functools import lru_cache
@@ -64,6 +65,13 @@ def ensure_output_dir(output_dir: str | None) -> str | None:
         return out
     return None
 
+@dataclass
+class Config:
+    """Lleugera 'wrapper' per a la configuració carregada del YAML.
+    Manté compatibilitat: seguim assignant globals com abans, però retornem l'objecte per traçabilitat/tests.
+    """
+    data: dict
+        
 def load_config(yaml_args, g: dict):
     """
     Carrega el YAML i reassigna seccions a variables globals per compatibilitat
@@ -81,9 +89,9 @@ def load_config(yaml_args, g: dict):
         with open(yaml_args.config, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f)
     except FileNotFoundError:
-        sys.exit(f"[ERROR] Fitxer de configuració no trobat: {path}")
+        raise RuntimeError(f"[ERROR] Fitxer de configuració no trobat: {path}")
     except yaml.YAMLError as e:
-        sys.exit(f"[ERROR] Error al parsejar el YAML {path}: {e}")
+        raise RuntimeError(f"[ERROR] Error al parsejar el YAML {path}: {e}")
 
                   
     # ---- VENT / WEIBULL / ROSA / DIRECCIONS ----
@@ -1507,7 +1515,6 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     H = res["acc_min_grid"]/60.0   # hores/any
     D = res["acc_days_grid"].astype(float)
     MPD = res["minutes_per_day_grid"]
-    #H = res["minutes_per_day_grid"] * 365 / 60.0   # hores/any
 
     # print(res["acc_min_grid"])
     # print(res["minutes_per_day_grid"])
@@ -1643,7 +1650,9 @@ def ensure_dem_loaded():
     if _DEM_CACHE:
         return
     DEM_DS, DEM_Z, DEM_T, DEM_BOUNDS, DEM_XRES, DEM_YRES = load_dem(DEM_PATH)
-        
+
+    DEM_Z = np.ascontiguousarray(DEM_Z.astype(np.float32, copy=False))
+    
     TA, TB, TC = float(DEM_T.a), float(DEM_T.b), float(DEM_T.c)
     TD, TE, TF = float(DEM_T.d), float(DEM_T.e), float(DEM_T.f)
     DEM_NORM  = normalize01(DEM_Z)
@@ -1651,7 +1660,48 @@ def ensure_dem_loaded():
                                valleys_light=VALLEYS_LIGHT)
     _DEM_CACHE = True
 
-def run_all():
+def run_all(args) -> int:
+    try:
+        cfg = load_config(args, globals())          # segueix omplint globals
+        ensure_dem_loaded()                          # DEM real segons YAML
+        if OUTPUT_DIR:
+            ensure_output_dir(OUTPUT_DIR)        
+
+        # Determinar quins nuclis són realment per processing
+        workers = get_optimal_workers()
+
+        if (args.scene == None or args.scene.upper() == "WORST"):
+            # WORST (astronòmic)
+            #res_worst = compute_shadow_flicker("WORST", None, True, N_SAMP_PER_KM, MAX_CHECKS_STEP)
+            res_worst = compute_shadow_flicker_multiproc("WORST", args, workers, N_SAMP_PER_KM, MAX_CHECKS_STEP)
+            plot_all_maps(res_worst, title_prefix="WORST (astronòmic, amb DEM)", file_suffix=f"WORST_{EXPORT_SUFFIX}")
+            prepare_csv("WORST", res_worst)
+
+        # REALISTIC (realistic)
+        if (args.scene == None or args.scene.upper() == "REAL"):    
+            #res_real = compute_shadow_flicker("REALISTIC", None, True, N_SAMP_PER_KM, MAX_CHECKS_STEP)
+            res_real = compute_shadow_flicker_multiproc("REALISTIC", args, workers, N_SAMP_PER_KM, MAX_CHECKS_STEP)
+            plot_all_maps(res_real, title_prefix="REALISTIC (probable, amb DEM)", file_suffix=f"REALISTIC_{EXPORT_SUFFIX}")
+            prepare_csv("REALISTIC", res_real)
+        return 0
+    except FileNotFoundError as e:
+        print(f"[ERROR] Fitxer no trobat: {e}", file=sys.stderr)
+        return 2
+    except RuntimeError as e:
+        print(f"[ERROR] Execució: {e}", file=sys.stderr)
+        return 3
+    except Exception as e:
+        import traceback
+        print("[ERROR] No previst:", file=sys.stderr)
+        print(" └─", e, file=sys.stderr)
+        traceback.print_exc()
+        return 10    
+    #cfg = load_config(args, globals())
+    #ensure_dem_loaded()
+    
+
+# Descomenta per executar en el teu entorn:
+if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Shadow Flicker Assessment"
     )
@@ -1671,32 +1721,6 @@ def run_all():
         help="yes o y. Tests ràpids"
     )
     
-    args = parser.parse_args()
-
-    cfg = load_config(args, globals())
-    ensure_dem_loaded()
-    
-    if OUTPUT_DIR:
-        ensure_output_dir(OUTPUT_DIR)        
-    
-    # Determinar quins nuclis són realment per processing
-    workers = get_optimal_workers()
-    
-    if (args.scene == None or args.scene.upper() == "WORST"):
-        # WORST (astronòmic)
-        #res_worst = compute_shadow_flicker("WORST", None, True, N_SAMP_PER_KM, MAX_CHECKS_STEP)
-        res_worst = compute_shadow_flicker_multiproc("WORST", args, workers, N_SAMP_PER_KM, MAX_CHECKS_STEP)
-        plot_all_maps(res_worst, title_prefix="WORST (astronòmic, amb DEM)", file_suffix=f"WORST_{EXPORT_SUFFIX}")
-        prepare_csv("WORST", res_worst)
-
-    # REALISTIC (realistic)
-    if (args.scene == None or args.scene.upper() == "REAL"):    
-        #res_real = compute_shadow_flicker("REALISTIC", None, True, N_SAMP_PER_KM, MAX_CHECKS_STEP)
-        res_real = compute_shadow_flicker_multiproc("REALISTIC", args, workers, N_SAMP_PER_KM, MAX_CHECKS_STEP)
-        plot_all_maps(res_real, title_prefix="REALISTIC (probable, amb DEM)", file_suffix=f"REALISTIC_{EXPORT_SUFFIX}")
-        prepare_csv("REALISTIC", res_real)
-
-# Descomenta per executar en el teu entorn:
-if __name__ == "__main__":
-    run_all()
+    exit_code = run_all(parser.parse_args())
+    sys.exit(exit_code)
 
