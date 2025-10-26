@@ -1643,6 +1643,7 @@ def ensure_dem_loaded():
     if _DEM_CACHE:
         return
     DEM_DS, DEM_Z, DEM_T, DEM_BOUNDS, DEM_XRES, DEM_YRES = load_dem(DEM_PATH)
+        
     TA, TB, TC = float(DEM_T.a), float(DEM_T.b), float(DEM_T.c)
     TD, TE, TF = float(DEM_T.d), float(DEM_T.e), float(DEM_T.f)
     DEM_NORM  = normalize01(DEM_Z)
