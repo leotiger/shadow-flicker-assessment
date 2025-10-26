@@ -5,7 +5,6 @@ Amb DEM screening (Numba), raster i receptors, dies afectats i minuts/dia.
 Inclou: CSV #META, timing, curtailment mensual, Weibull vent, reponderació direccional (mitjana=1),
 SOL per turbina (opcional), tall 10×D, tolerància azimutal.
 """
-
 import os, math, time, yaml, argparse, sys, json, csv, datetime as dt
 from collections import defaultdict, deque
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -15,7 +14,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap, BoundaryNorm
-from matplotlib.colors import LightSource
+#from matplotlib.colors import LightSource
 import rasterio
 from rasterio.transform import Affine
 import rasterio.transform
@@ -31,6 +30,8 @@ except Exception:
     def njit(*args, **kwargs):
         def wrap(f): return f
         return wrap
+    def prange(*args, **kwargs):
+        return range(*args)  # fallback segur
     
 cfg = None
 
@@ -266,7 +267,7 @@ DEM_PATH = "DEM_clip_5m-rpglobal.tif"   # DEM 5 m existent
 #ROTOR_R = ROTOR_D/2.0
 
 # Tall físic shadow flicker
-MAX_SF_DIST = "Per turbine config rotor_d * 10" #10.0 * ROTOR_D   # 10 × D → ~1.72 km per D=172
+MAX_SF_DIST = None  # calculat després com rotor_d*10
 
 # Resolució temporal i espacial
 TIME_STEP_MIN = 10.0            # puja a 5–10 min si vols calcular més ràpid per proves, però cal fixar-ho en 1 (1 minut) per càlculs exactes
@@ -432,9 +433,6 @@ def wind_oper_prob_month(m, cut_in, cut_out):
     else:
         return 0
 
-import math
-import datetime as dt
-
 def solar_pos_utc(dt_utc, lat_deg, lon_deg):
     """
     dt_utc: datetime timezone-aware en UTC (o naive assumint UTC).
@@ -566,13 +564,13 @@ def normalize01(A):
 # --- Carrega DEM una sola vegada
 VALLEYS_LIGHT = True
 
-DEM_DS, DEM_Z, DEM_T, DEM_BOUNDS, DEM_XRES, DEM_YRES = load_dem(DEM_PATH)
+# DEM_DS, DEM_Z, DEM_T, DEM_BOUNDS, DEM_XRES, DEM_YRES = load_dem(DEM_PATH)
 # Constants de transformada (affine) per a Numba
-TA = float(DEM_T.a); TB = float(DEM_T.b); TC = float(DEM_T.c)
-TD = float(DEM_T.d); TE = float(DEM_T.e); TF = float(DEM_T.f)
+# TA = float(DEM_T.a); TB = float(DEM_T.b); TC = float(DEM_T.c)
+# TD = float(DEM_T.d); TE = float(DEM_T.e); TF = float(DEM_T.f)
 
-DEM_NORM  = normalize01(DEM_Z)
-DEM_SHADE = make_hillshade(DEM_Z, DEM_XRES, DEM_YRES, az_deg=315.0, alt_deg=45.0, valleys_light=VALLEYS_LIGHT)
+# DEM_NORM  = normalize01(DEM_Z)
+# DEM_SHADE = make_hillshade(DEM_Z, DEM_XRES, DEM_YRES, az_deg=315.0, alt_deg=45.0, valleys_light=VALLEYS_LIGHT)
 
 # ----------- Intensitat lúminca ----------
 # Cel clar: DNI ≈ 900, DHI ≈ 50 → cal sin ℎ ≥ (120−50) / 900 = 0.078 → h ≈ 4.5°
@@ -1279,6 +1277,7 @@ def compute_shadow_flicker_month(scen_name, month, args,
                                  n_samp_per_km=48, max_checks_per_step=4000):
     
     cfg = load_config(args, globals())
+    ensure_dem_loaded()
     
     IS_WORST = (scen_name == "WORST")
     
@@ -1623,7 +1622,8 @@ def compute_shadow_flicker_multiproc(scen_name, args, workers=None, n_samp_per_k
     workers = workers or os.cpu_count()
     
     cfg = load_config(args, globals())    
-
+    ensure_dem_loaded()
+    
     parts = []
     with ProcessPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(compute_shadow_flicker_month, scen_name, m, args, n_samp_per_km=n_samp_per_km, max_checks_per_step=max_checks_per_step): m for m in range(1,13)}
@@ -1932,6 +1932,20 @@ def get_optimal_workers():
         return max(2, cpu_count)
 
 
+_DEM_CACHE = False
+def ensure_dem_loaded():
+    global _DEM_CACHE, DEM_DS, DEM_Z, DEM_T, DEM_BOUNDS, DEM_XRES, DEM_YRES
+    global TA, TB, TC, TD, TE, TF, DEM_NORM, DEM_SHADE
+    if _DEM_CACHE:
+        return
+    DEM_DS, DEM_Z, DEM_T, DEM_BOUNDS, DEM_XRES, DEM_YRES = load_dem(DEM_PATH)
+    TA, TB, TC = float(DEM_T.a), float(DEM_T.b), float(DEM_T.c)
+    TD, TE, TF = float(DEM_T.d), float(DEM_T.e), float(DEM_T.f)
+    DEM_NORM  = normalize01(DEM_Z)
+    DEM_SHADE = make_hillshade(DEM_Z, DEM_XRES, DEM_YRES, az_deg=315.0, alt_deg=45.0,
+                               valleys_light=VALLEYS_LIGHT)
+    _DEM_CACHE = True
+
 def run_all():
     parser = argparse.ArgumentParser(
         description="Shadow Flicker Assessment"
@@ -1955,7 +1969,8 @@ def run_all():
     args = parser.parse_args()
 
     cfg = load_config(args, globals())
-
+    ensure_dem_loaded()
+    
     if OUTPUT_DIR:
         ensure_output_dir(OUTPUT_DIR)        
     
@@ -1980,4 +1995,3 @@ def run_all():
 if __name__ == "__main__":
     run_all()
 
-#run_all()
