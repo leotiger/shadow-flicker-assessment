@@ -146,7 +146,7 @@ shadow_flicker:
   grid_step_m: 15          # pas del raster
   raster_tol_m: 1.0
   h_rec_raster_m: 2.0
-  max_checks_step: 4000
+  max_checks_step: 5000
   n_samp_per_km: 60
 
   min_elev_deg: 3.0          # llindar geomètric mínim
