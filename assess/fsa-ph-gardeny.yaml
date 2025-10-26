@@ -138,7 +138,7 @@ receptors:
 
 shadow_flicker:
   time_step_min: 1.0         # resolució temporal en minuts, 1min protocol alemany
-  grid_step_m: 25          # pas del raster. < 25 afegeix molta carrega computacional
+  grid_step_m: 15          # pas del raster. < 25 afegeix molta carrega computacional
   raster_tol_m: 1.0
   h_rec_raster_m: 2.0
   max_checks_step: 5000    # no puja a més de 5000 per evitar carrega computacional
