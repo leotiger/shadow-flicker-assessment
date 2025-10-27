@@ -1239,34 +1239,6 @@ def compute_shadow_flicker_month(scen_name, month, args,
     if current_day is not None:
         flush_day()
 
-    # Derivats per receptor: dies amb superació i màxim diari
-    # over30_days_R   = defaultdict(int)     # #dies amb mins >= MAX_MIN_PER_DAY (it's normally 30min + something)
-    # max_day_min_R   = defaultdict(float)   # màxim de minuts en 1 dia
-    # max_day_date_R  = {}                   # data del màxim        
-    
-    # Recorre totes les claus (rid, date)
-    # for (rid, dte), mins in acc_min_day_R.items():
-        # acccumulate using >= as we can suppose that most of the values even when exactly 30min
-        # have a seconds remainder pushing the value over the limit 3min 0sec will be statistically neglectable
-    #    if mins > MAX_MIN_PER_DAY:
-    #        over30_days_R[rid] += 1
-            
-    #    if mins > max_day_min_R[rid]:
-    #        max_day_min_R[rid]  = mins
-    #        max_day_date_R[rid] = dte
-            
-    # Derivats raster: minuts/dia afectat
-    #with np.errstate(divide='ignore', invalid='ignore'):
-    #    minutes_per_day_grid = np.where(acc_days_grid > 0,
-    #                                    acc_min_grid / acc_days_grid,
-    #                                    0.0)
-
-    # Derivats receptors: minuts/dia
-    #minutes_per_day_R = {}
-    #for rid, mins in acc_min_R.items():
-    #    d = acc_days_R.get(rid, 0)
-    #    minutes_per_day_R[rid] = (mins / d) if d > 0 else 0.0
-
     # Timing resum
     if ENABLE_TIMING and timing is not None:
         total_ms = timing["total_ms"]; total_calls = timing["total_calls"]
@@ -1485,24 +1457,33 @@ def draw_turbines_and_receptors(ax, turbines, receptors, res, mode,
 
     
     for (nuc, rid, rx, ry, hrec) in receptors:
-        txth = "n/a"
-        txtd = "n/a"
-        txtm = "n/a"
-        v_min = float(mins_dict.get(rid, 0.0))
-        value = v_min/60.0
-        txth = f"{value:.1f} hores/any"
-        value = int(days_dict.get(rid, 0))
-        txtd = f"{value:d} dies/any"
-        value = float(mpd_dict.get(rid, 0.0))
-        txtm = f"x̄{value:.1f} min/dia"
+        #txth = "n/a"
+        txtdata = "n/a"
+        #txtm = "n/a"
+        if mode == "hours":            
+            v_min = float(mins_dict.get(rid, 0.0))
+            value = format_eu((v_min/60.0), 1)
+            txtdata = f"{value} hores/any"
+            print(txtdata)
+        if mode == "days":            
+            value = int(days_dict.get(rid, 0))
+            txtdata = f"{value:d} dies/any"
+            print(txtdata)
+        if mode == "minuts":
+            value = format_eu((float(mpd_dict.get(rid, 0.0))), 1)
+            txtdata = f"x̄{value} min/dia"
+            print(txtdata)
+                              
         value = int(over30_dict.get(rid, 0.0))
-        txto = f"{value} dies > {int(MAX_MIN_PER_DAY)}min"
+        txto = f"{value:d} dies > {int(MAX_MIN_PER_DAY)}min"
+        txtutmx = f"UTM X: {rx}"
+        txtutmy = f"UTM Y: {ry}"
             
         ax.scatter([rx], [ry], marker='s', s=RECEPT_MS,
                    facecolor=CLR_RECEPTOR, edgecolor='white', linewidths=0.8,
                    zorder=52)
         if show_rec_labels:
-            ax.text(rx + LABEL_DX, ry + LABEL_DY, f"{nuc}:\n{txth}\n{txtd}\n{txtm}\n{txto}", # sense :{rid}
+            ax.text(rx + LABEL_DX, ry + LABEL_DY, f"{nuc}:\n{txtdata}\n{txto}\n{txtutmx}\n{txtutmy}", # sense :{rid}
                     fontsize=LABEL_FONTSIZE, color=CLR_RECEPT_LABEL,
                     ha='left', va='bottom', zorder=58,
                     bbox=dict(boxstyle='round,pad=0.2',
@@ -1516,9 +1497,6 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     D = res["acc_days_grid"].astype(float)
     MPD = res["minutes_per_day_grid"]
 
-    # print(res["acc_min_grid"])
-    # print(res["minutes_per_day_grid"])
-    
     fig, ax = plt.subplots(1,1, figsize=(12,6), constrained_layout=True)
     fig.suptitle(f"{title_prefix} – hores/any")
 
@@ -1596,28 +1574,68 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     result_path = os.path.join(OUTPUT_DIR, f"SHADOW_{YEAR}_MINUTS_DAY_{file_suffix}.png")
     plt.savefig(result_path, dpi=180); plt.close(fig)
 
-    
 def prepare_csv(scen_name, res):
-    # CSV receptors SCENE (hores/dies/minuts/dia)
+    """
+    Exporta per receptor:
+      - Hores_any
+      - Dies_afectats
+      - Minuts/dia(mitjana)
+      - Dies>30min (diari amb criteri > 30 min — ja ho tens implementat)
+      - Max_min_dia i Data_max_dia
+      + Compli/Excés anual segons escenari:
+        WORST     → ANNUAL_LIMIT_ASTR (p.ex. 30 h)
+        REALISTIC → ANNUAL_LIMIT_REAL (p.ex. 8 h)
+    """
     rows = []
-    for (nuc, rid, rx, ry, hrec) in RPTS:
-        mins = res["receptors_min"].get(rid, 0.0)
-        dys  = res["receptors_days"].get(rid, 0)
-        mpd  = res["receptors_mpd"].get(rid, 0.0)
-        over = res["over30_days_R"].get(rid, 0)
-        mxd  = res["max_day_min_R"].get(rid, 0.0)
-        mxd_date = res["max_day_date_R"].get(rid, "")
-        rows.append([nuc, rid, rx, ry, hrec, round(mins/60.0,2), dys, round(mpd,2), over, round(mxd,1), mxd_date])
-    
-    
-    result_path = os.path.join(OUTPUT_DIR, f"SHADOW_{YEAR}_{scen_name}_{EXPORT_SUFFIX}_receptors.csv")
-    
-    write_csv_with_meta(result_path,
-                        ["Nucli","ReceptorID","X","Y","h_rec(m)","Hores_any","Dies_afectats","Minuts/dia(mitjana)",
-                        f"Dies>{int(MAX_MIN_PER_DAY)}min","Max_min_dia","Data_max_dia"],
-                        rows, scen_name)
+    scen_upper = str(scen_name).upper().strip()
 
-# ---------- (10) Exemple d’ús ----------
+    # Límits anuals segons escenari
+    if scen_upper == "WORST":
+        limit_h = float(ANNUAL_LIMIT_ASTR)
+    else:
+        limit_h = float(ANNUAL_LIMIT_REAL)
+
+    for (nuc, rid, rx, ry, hrec) in RPTS:
+        mins_year   = float(res["receptors_min"].get(rid, 0.0))   # minuts acumulats any
+        hours_year  = mins_year / 60.0
+        days_hit    = int(res["receptors_days"].get(rid, 0))
+        mpd         = float(res["receptors_mpd"].get(rid, 0.0))   # minuts/dia mitjana
+        days_over30 = int(res["over30_days_R"].get(rid, 0))       # criteri > 30 min (ja implementat)
+        max_day_min = float(res["max_day_min_R"].get(rid, 0.0))
+        max_day_dt  = res["max_day_date_R"].get(rid, "")
+
+        # Compliment anual
+        annual_ok  = hours_year <= limit_h
+        annual_exc = max(0.0, hours_year - limit_h)
+
+        rows.append([
+            nuc, rid, rx, ry, hrec,
+            round(hours_year, 2),
+            days_hit,
+            round(mpd, 2),
+            days_over30,
+            round(max_day_min, 1),
+            max_day_dt,
+            limit_h,
+            annual_ok,
+            round(annual_exc, 2),
+        ])
+
+    result_path = os.path.join(OUTPUT_DIR, f"SHADOW_{YEAR}_{scen_name}_{EXPORT_SUFFIX}_receptors.csv")
+
+    write_csv_with_meta(
+        result_path,
+        [
+            "Nucli","ReceptorID","X","Y","h_rec(m)","Hores_any",
+            "Dies_afectats","Minuts/dia(mitjana)",
+            f"Dies>{int(MAX_MIN_PER_DAY)}min","Max_min_dia","Data_max_dia",
+            "Límit_h_any","Compl_any","Excés_h_any"
+        ],
+        rows, scen_name
+    )
+    
+
+# ---------- Check for available processing cores ----------
 def get_optimal_workers():
     """
     Retorna un nombre de workers òptim segons la màquina:

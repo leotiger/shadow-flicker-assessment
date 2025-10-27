@@ -11,9 +11,9 @@ project:
   output_dir: "ph-gardeny"
 
 domain:
-  xmin: 340500
+  xmin: 341500
   ymin: 4598500
-  xmax: 347500
+  xmax: 349500
   ymax: 4603500
 
 turbines:
