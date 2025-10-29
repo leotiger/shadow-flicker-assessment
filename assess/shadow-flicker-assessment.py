@@ -152,6 +152,7 @@ def load_config(yaml_args, g: dict):
             g["RASTER_TOL_M"] = 1.0 
             g["MAX_CHECKS_STEP"] = 4000
             g["N_SAMP_PER_KM"] = 60
+            g["TOL_AZDEG"] = 10
         else:
             g["GRID_STEP_M"]  = _num(sf.get("grid_step_m"), g.get("GRID_STEP_M"))
             g["H_REC_RASTER"] = _num(sf.get("h_rec_raster_m"), g.get("H_REC_RASTER"))
@@ -159,6 +160,7 @@ def load_config(yaml_args, g: dict):
             g["RASTER_TOL_M"] = _num(sf.get("raster_tol_m"), g.get("RASTER_TOL_M"))
             g["MAX_CHECKS_STEP"] = _num(sf.get("max_checks_step"), g.get("MAX_CHECKS_STEP"))
             g["N_SAMP_PER_KM"] = _num(sf.get("n_samp_per_km"), g.get("N_SAMP_PER_KM"))
+            g["TOL_AZDEG"] = _num(sf.get("tol_azdeg"), g.get("TOL_AZDEG"))
 
     # ---- TURBINES (llista i índex per id) ----
     legacy = []
@@ -284,6 +286,10 @@ H_REC_RASTER  = 2.0            # alçada del receptor “raster” (mapa d’env
 RASTER_TOL_M       = 0.5     # tolerància d'excedència (impuresa) DEM per línia SOL→píxel (m)
 MAX_CHECKS_STEP = 4000
 N_SAMP_PER_KM = 48
+# No cal mirar per elevació per sota de 3º
+MIN_ELEV = 3.0
+TOL_AZDEG = 10
+
 
 # Precalc of turbine horizons
 HORIZON = {}
@@ -376,8 +382,6 @@ SUNSHINE_FRAC_MONTH_PROFILES = {  # aprox. inland català i apujant una mica per
     "REALISTIC": {1:0.52, 2:0.52, 3:0.55, 4:0.60, 5:0.70, 6:0.75, 7:0.80, 8:0.80, 9:0.70,10:0.65,11:0.55,12:0.52}
 }
 
-# No cal mirar per elevació per sota de 3º
-MIN_ELEV = 3.0
 
 def sunshinefrac_fn_factory(profile):
     def fn(m): return float(profile.get(m, 0.98))
@@ -613,6 +617,16 @@ def elev_min_deg_for_ghi_watts(given_d: float, target_ghi: float = 120.0, dni: f
     else:
         return 0
 
+def dynamic_tol_azdeg(dist_h, rotor_d, az_drift_per_step_deg, k=1.2, min_deg=3.0, max_deg=12.0):
+    # dist_h en metres; rotor_d en metres
+    if dist_h <= 0:
+        return max_deg
+    half = 0.5 * rotor_d
+    ratio = min(1.0, (k * half) / float(dist_h))
+    base = math.degrees(math.asin(ratio)) if ratio > 0 else 0.0
+    # Afegim mig de la deriva d’azimut del timestep (anti-aliasing)
+    tol = base + 0.5 * max(0.0, float(az_drift_per_step_deg))
+    return max(min_deg, min(max_deg, tol))
 
 # ---------- (4) Numba screening ----------
 @njit(cache=True, fastmath=True)
@@ -804,7 +818,7 @@ def _new_timing_bucket():
     return {"total_calls":0, "total_ms":0.0, "per_turb":{}, "per_step":[]}
 
 def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, dt_min, h_rec_raster,
-                                     tx, ty, max_sf_dist, rotor_shade_h, rotor_tol_deg=8.0,
+                                     tx, ty, max_sf_dist, rotor_shade_h, rotor_d, rotor_tol_deg=8.0,
                                      n_samp_per_km=48, tol_m=0.5,
                                      max_checks_per_step=4000,
                                      timing_bucket=None, tname="TURB",
@@ -817,10 +831,26 @@ def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, dt_min, h_rec
     L = (rotor_shade_h - h_rec_raster) / max(np.tan(np.radians(elev)), 1e-6)
     #L = (rotor_shade_h - h_rec_raster) / max(math.tan(math.radians(elev)), 1e-6)
 
+    R = 0.5 * rotor_d
+    ratio = np.clip(R / np.maximum(dist_h, 1e-6), 0.0, 1.0)
+    theta_geom = np.degrees(np.arcsin(ratio))           # només geometria del disc
+
+    # marge addicional opcional (configurable). Per WINDPRO-strict → 0.0
+    theta_extra = rotor_tol_deg  # + 0.5*az_drift_per_step_deg si ho vols contemplar
+    theta_allow = theta_geom + theta_extra
+
+    # diferència d’azimut mínima (−180..+180)
+    daz = np.abs(((az_rt - az + 180.0) % 360.0) - 180.0)
+
     mask_cand = (
-        (dist_h <= min(L, max_sf_dist)) &
-        (np.abs(((az_rt - az + 180.0) % 360.0) - 180.0) <= rotor_tol_deg)
-    )
+        (dist_h <= np.minimum(L, max_sf_dist)) &
+        (daz <= theta_allow)
+    )    
+    
+    #mask_cand = (
+    #    (dist_h <= min(L, max_sf_dist)) &
+    #    (np.abs(((az_rt - az + 180.0) % 360.0) - 180.0) <= rotor_tol_deg)
+    #)
     
     rr = np.array([])   
     cc = np.array([])   
@@ -884,7 +914,7 @@ def write_csv_with_meta(path, header_cols, rows, scen_name):
     curt_fn     = params["curt_fn"]
     use_screen  = params["terrain_screen"]
     use_dir     = params["use_dir"]
-    tol_azdeg   = params["tol_azdeg"]
+    tol_azdeg   = TOL_AZDEG #params["tol_azdeg"]
     
     meta = [
         ["#META","year", YEAR],
@@ -927,7 +957,7 @@ SCENARIOS = {
         "curt_fn":  curtail_fn_factory(CURTAIL_MONTH_PROFILES["REALISTIC"]),
         "terrain_screen": True,
         "use_dir": USE_DIR_REWEIGHT,
-        "tol_azdeg": 10.0,
+        "tol_azdeg": 8.0,
     },
 }
 
@@ -1000,7 +1030,7 @@ def compute_shadow_flicker_month(scen_name, month, args,
     curt_fn     = params["curt_fn"]
     use_screen  = params["terrain_screen"]
     use_dir     = params["use_dir"]
-    tol_azdeg   = params["tol_azdeg"]
+    tol_azdeg   = TOL_AZDEG # params["tol_azdeg"]
     
     
     # prepara XX,YY, acumuladors (idèntics en forma i dtype a l’anual)
@@ -1071,6 +1101,14 @@ def compute_shadow_flicker_month(scen_name, month, args,
         elev_g, az_g = solar_pos_utc(t, SITE_LAT, SITE_LON)
         dt_min = next_step_minutes(elev_g)  # minuts del pas actual
 
+        # az0 = az_t  # azimut al començament del pas
+        # az1 = solar_pos_utc(t + dt.timedelta(minutes=dt_min), SITE_LAT, SITE_LON)[1]
+        # az_drift = abs(((az1 - az0 + 180) % 360) - 180)
+
+        # tol_azdeg_pair = dynamic_tol_azdeg(dist_h, rotor_d, az_drift, k=1.2)
+        # if abs(((az_rt - az_t + 180) % 360) - 180.0) > tol_azdeg_pair:
+        #    continue        
+        
         # 0.5 to low check if this is ok, probably has to be something like 2.5 as intensity is higher in Catalonia (Germany 3.0)
         # We leave it to 3º of elevation to assure standards
         if elev_g < MIN_ELEV: 
@@ -1135,10 +1173,35 @@ def compute_shadow_flicker_month(scen_name, month, args,
                     continue
 
                 # Alineació azimutal
-                az_rt = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
-                if abs(((az_rt - az_t + 180.0) % 360.0) - 180.0) > tol_azdeg:
-                    continue
+                #az_rt = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+                #if abs(((az_rt - az_t + 180.0) % 360.0) - 180.0) > tol_azdeg:
+                #    continue
+                # vector receptor -> turbina al pla
+                #dxv = rx - tx
+                #dyv = ry - ty
+                #dist_hv = math.hypot(dx, dy)
 
+                # Azimut receptor->turbina amb convenció 0°=N, 90°=E (coherent amb el teu sol)
+                # atan2(y, x) dóna 0° a l’eix +X. Per tenir 0° cap al Nord, usem atan2(dx, dy).
+                az_rt = (math.degrees(math.atan2(dx, dy)) + 360.0) % 360.0
+
+                # Diferència d’azimut mínima (−180..+180)
+                daz = abs(((az_rt - az_t + 180.0) % 360.0) - 180.0)
+
+                # Finestra angular geomètrica del disc
+                R = 0.5 * rotor_d
+                ratio = min(1.0, R / max(dist_h, 1e-6))
+                theta_geom = math.degrees(math.asin(ratio))
+
+                # Marge addicional opcional (0° en WINDPRO-strict)
+                tol_extra_deg = tol_azdeg  # o el que configuris
+                theta_allow = theta_geom + tol_extra_deg
+
+                # Comprovació angular correcta
+                if daz > theta_allow:
+                    continue
+                
+                
                 # DEM screening
                 if use_screen:
                     H = get_horizon_for(tname, tx, ty, rotor_shade_h)                    
@@ -1205,7 +1268,7 @@ def compute_shadow_flicker_month(scen_name, month, args,
                 XX, YY, acc_min_grid,
                 elev=elev_t, az=az_t, w=w_eff_grid, dt_min=dt_min,
                 h_rec_raster=H_REC_RASTER, tx=tx, ty=ty, max_sf_dist=max_sf_dist, rotor_shade_h=rotor_shade_h,
-                rotor_tol_deg=tol_azdeg, n_samp_per_km=n_samp_per_km, tol_m=RASTER_TOL_M,
+                rotor_d=rotor_d, rotor_tol_deg=tol_azdeg, n_samp_per_km=n_samp_per_km, tol_m=RASTER_TOL_M,
                 max_checks_per_step=max_checks_dyn,
                 timing_bucket=timing, tname=tname, throttle=True,
                 daily_hit_mask=daily_hit_mask

@@ -15,9 +15,9 @@
 #META;grid_step_m;15.0
 #META;h_rec_raster;2.0
 #META;raster_tol_m;1.0
-Nucli;ReceptorID;X;Y;h_rec(m);Hores_any;Dies_afectats;Minuts/dia(mitjana);Dies>30min;Max_min_dia;Data_max_dia
-La Pobla de Ferran;PBF_1;349013.0;4599960.0;2.0;0.0;0;0.0;0;0.0;
-Passanant;PAS_1;349455.0;4599284.0;2.0;131.47;143;55.16;116;78.0;2025-01-20
-Glorieta;GLO_1;350170.0;4598024.0;2.0;266.17;232;68.84;202;118.0;2025-01-18
-La Sala de Comalats;SAL_1;351251.0;4597853.0;2.0;124.1;137;54.35;127;64.0;2025-01-12
-Belltall;BEL_1;348542.0;4596638.0;2.0;97.07;133;43.79;123;50.0;2025-06-05
+Nucli;ReceptorID;X;Y;h_rec(m);Hores_any;Dies_afectats;Minuts/dia(mitjana);Dies>30min;Max_min_dia;Data_max_dia;Límit_h_any;Compl_any;Excés_h_any
+La Pobla de Ferran;PBF_1;349013.0;4599960.0;2.0;0.0;0;0.0;0;0.0;;30.0;True;0.0
+Passanant;PAS_1;349455.0;4599284.0;2.0;45.37;68;40.03;42;74.0;2025-11-05;30.0;False;15.37
+Glorieta;GLO_1;350170.0;4598024.0;2.0;131.37;164;48.06;104;112.0;2025-01-30;30.0;False;101.37
+La Sala de Comalats;SAL_1;351251.0;4597853.0;2.0;34.0;60;34.0;33;60.0;2025-01-31;30.0;False;4.0
+Belltall;BEL_1;348542.0;4596638.0;2.0;31.13;66;28.3;31;48.0;2025-05-16;30.0;False;1.13
