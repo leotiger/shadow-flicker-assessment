@@ -15,8 +15,8 @@
 #META;grid_step_m;15.0
 #META;h_rec_raster;2.0
 #META;raster_tol_m;1.0
-Nucli;ReceptorID;X;Y;h_rec(m);Hores_any;Dies_afectats;Minuts/dia(mitjana);Dies>30min;Max_min_dia;Data_max_dia
-Nalec;NAL_1;343021.03;4602515.42;4.0;84.97;104;49.02;93;58.0;2025-12-15
-Ciutadilla;CIU_1;344907.16;4602593.11;4.0;0.0;0;0.0;0;0.0;
-004001200CG40B;CAT_1;345459.0;4601257.0;4.0;138.83;148;56.28;138;68.0;2025-05-25
-Sant Roc;SAN_1;344840.2;4600631.0;4.0;373.53;340;65.92;320;126.0;2025-04-19
+Nucli;ReceptorID;X;Y;h_rec(m);Hores_any;Dies_afectats;Minuts/dia(mitjana);Dies>30min;Max_min_dia;Data_max_dia;Límit_h_any;Compl_any;Excés_h_any
+Nalec;NAL_1;343021.03;4602515.42;4.0;50.07;73;41.15;58;56.0;2025-01-05;30.0;False;20.07
+Ciutadilla;CIU_1;344907.16;4602593.11;4.0;0.0;0;0.0;0;0.0;;30.0;True;0.0
+004001200CG40B;CAT_1;345459.0;4601257.0;4.0;46.57;72;38.81;44;66.0;2025-08-03;30.0;False;16.57
+Sant Roc;SAN_1;344840.2;4600631.0;4.0;154.47;228;40.65;134;98.0;2025-04-03;30.0;False;124.47

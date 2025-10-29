@@ -1,8 +1,7 @@
 # Shadow Flicker Assessment
 
 **If you encounter any issues, please don't hesitate
-to [report
-them](https://github.com/leotiger/shadow-flicker-assessment/issues).**
+to [report them](https://github.com/leotiger/shadow-flicker-assessment/issues).**
 
 ![Screenshot](Screenshot.png)
 
@@ -44,6 +43,31 @@ run the script without the fast flag, but be advised that the script may run for
 To run only one of the two scenarios available, WORST and REALISTIC, please provide the scenario using the --scene (-s) flag.
 
 To run assessments for specific projects you'll have to gather a lot of data first. Once you have the data available you can edit the assessment configuration .yaml for the wind park you want to investigate. You provide your .yaml configuration via the --config (-c) flag.
+
+## Assessment
+
+The German protocol states that the Worst Case is the basis to consider regulations and obligations for the project once a project proposal exceeds the limits of 30 hours / year and 30 minuts / day under Worst Case conditions.
+
+In operating conditions the limits are more restrictive and allow for a maximum of 8 hours of accumulated shadow flicker per year and a maximum of 3 days exceeding 30 minutes. Both limits have to be fullfilled independently.
+
+"Of relevance are the actual or perceptible immissions occurring at an immission site, which may only arise under certain weather conditions. An effect caused by expected periodic shadow flicker is not considered significantly disturbing if the astronomically maximum possible shadowing duration, taking into account cumulatively all contributions from wind turbines (WKA) at the respective immission site at a reference height of 2 m above ground level, does not exceed 30 hours per calendar year and, moreover, does not exceed 30 minutes per calendar day.
+
+In assessing the degree of disturbance, an average sensitive person was used as the benchmark.
+
+If the values for the astronomically maximum possible shadowing duration are exceeded, technical measures to limit the operating times of the wind turbines may be considered. An important technical measure, often imposed as a condition or requirement, is the installation of a shutdown system that, by means of radiation or illuminance sensors, detects the actual meteorological shadowing situation and thereby limits the actual local shadowing duration.
+
+Since the value of 30 hours per calendar year was developed on the basis of the astronomically possible shadowing, a corresponding value for the actual, real shadowing duration – the meteorological shadowing duration – is set for shutdown systems. According to [2], this value is 8 hours per calendar year." (https://www.lai-immissionsschutz.de/documents/wka_schattenwurfhinweise_stand_23_1588595757.01.pdf)
+
+The **Shadow Flicker Assessment** tool implements the German protocol in a strict way avoiding overestimation of shadow flicker. As a basic rule, every wind park (operating or in development) has to implement protocols to prevent shadow flicker once the Worst Case results prove to be over the limits for sensible receptors.
+
+## Results
+
+The script delivers 4 files for each scenerio:
+
+- The hours/year graphics plot
+- The days/year graphics plot
+- The minuts/day graphics plot
+- A summary csv file including configuration parameters and essential results for receptors
 
 ### Important
 
