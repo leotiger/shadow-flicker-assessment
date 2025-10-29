@@ -44,7 +44,7 @@ To run only one of the two scenarios available, WORST and REALISTIC, please prov
 
 To run assessments for specific projects you'll have to gather a lot of data first. Once you have the data available you can edit the assessment configuration .yaml for the wind park you want to investigate. You provide your .yaml configuration via the --config (-c) flag.
 
-To run the assessment tool you will need to provide a DEM tiff file and you need to prepare the oficial DEM files into a unique set that reflecte the terrain afected. Below you'll find a example to produce an elevation raster map for given UTM coordinates and the correspondig official map tiles:
+To run the assessment tool you will need to provide a DEM tiff file and you need to prepare the oficial DEM files into a unique set that reflecte the terrain afected. Below you'll find an example to produce an elevation raster map for given UTM coordinates and the correspondig official map tiles:
 
 ``
 gdalwarp -t_srs EPSG:25831 -te 342000 4604000 355000 4596000 \
