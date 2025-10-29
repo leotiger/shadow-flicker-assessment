@@ -15,9 +15,9 @@
 #META;grid_step_m;15.0
 #META;h_rec_raster;2.0
 #META;raster_tol_m;1.0
-Nucli;ReceptorID;X;Y;h_rec(m);Hores_any;Dies_afectats;Minuts/dia(mitjana);Dies>30min;Max_min_dia;Data_max_dia
-La Pobla de Ferran;PBF_1;349013.0;4599960.0;4.0;132.2;138;57.48;127;66.0;2025-06-05
-Passanant;PAS_1;349455.0;4599284.0;4.0;0.0;0;0.0;0;0.0;
-Guimarà;GUI_1;349095.0;4602769.0;4.0;66.7;102;39.24;77;52.0;2025-02-05
-Vallfogona;VAL_1;352867.2;4602929.0;4.0;0.0;0;0.0;0;0.0;
-Moli Cadena;MOL_1;351516.21;4602539.0;4.0;116.13;139;50.13;84;86.0;2025-02-21
+Nucli;ReceptorID;X;Y;h_rec(m);Hores_any;Dies_afectats;Minuts/dia(mitjana);Dies>30min;Max_min_dia;Data_max_dia;Límit_h_any;Compl_any;Excés_h_any
+La Pobla de Ferran;PBF_1;349013.0;4599960.0;4.0;50.87;89;34.29;48;62.0;2025-05-09;30.0;False;20.87
+Passanant;PAS_1;349455.0;4599284.0;4.0;0.0;0;0.0;0;0.0;;30.0;True;0.0
+Guimarà;GUI_1;349095.0;4602769.0;4.0;21.2;43;29.58;21;50.0;2025-02-19;30.0;True;0.0
+Vallfogona;VAL_1;352867.2;4602929.0;4.0;0.0;0;0.0;0;0.0;;30.0;True;0.0
+Moli Cadena;MOL_1;351516.21;4602539.0;4.0;49.9;63;47.52;42;84.0;2025-03-02;30.0;False;19.9
