@@ -44,6 +44,19 @@ To run only one of the two scenarios available, WORST and REALISTIC, please prov
 
 To run assessments for specific projects you'll have to gather a lot of data first. Once you have the data available you can edit the assessment configuration .yaml for the wind park you want to investigate. You provide your .yaml configuration via the --config (-c) flag.
 
+To run the assessment tool you will need to provide a DEM tiff file and you need to prepare the oficial DEM files into a unique set that reflecte the terrain afected. Below you'll find a example to produce an elevation raster map for given UTM coordinates and the correspondig official map tiles:
+
+``
+gdalwarp -t_srs EPSG:25831 -te 342000 4604000 355000 4596000 \
+  -r bilinear -of GTiff -co COMPRESS=LZW \
+  PNOA_MDT05_ETRS89_HU30_0390_LID.tif \
+  PNOA_MDT05_ETRS89_HU30_0418_LID.tif \
+  PNOA_MDT05_ETRS89_HU31_0390_LID.tif \
+  PNOA_MDT05_ETRS89_HU31_0418_LID.tif \
+  DEM_clip_5m-rpglobal.tif
+``
+
+
 ## Assessment
 
 The German protocol states that the Worst Case is the basis to consider regulations and obligations for the project once a project proposal exceeds the limits of 30 hours / year and 30 minuts / day under Worst Case conditions.
