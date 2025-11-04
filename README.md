@@ -87,6 +87,10 @@ The script delivers 4 files for each scenerio:
 
 Despite having been reviewed and found error free, be advised that this script is a helper tool. You may want (or need) to calculate some data points manually to prove correctness of the assumptions and results provided by this script.
 
+### Other tools
+
+Currently no other simple scripts are available for assessment of shadow flicker. You may use commercial programs like WindPro or WindFarmer and you may use the free OpenWind with partial implementation for shadow flicker. To provide a simple and transparent script with an easy to adapt configuration file is the motivation behind the shadow flicker assessment tool provided here.
+
 ### ToDo
 
 - [x] Clean and improve code base
