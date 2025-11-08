@@ -1,5 +1,5 @@
 # v1.0
-## 08-11-2024
+## 2024-11-08
 
 1. [](#bugfix)
     * Several bugfixes especially for terrain screening to assure that receptor results are reflected and sustained by terrain results
@@ -11,7 +11,7 @@
     * Add basic version information for tracebility
     
 # v0.1
-## 23-10-2024
+## 2024-10-23
 
 1. [](#startup) 
     * Repository for Shadow Flicker script
