@@ -147,7 +147,7 @@ def load_config(yaml_args, g: dict):
         # (Opcional) altres paràmetres que tinguis al bloc:
         if (yaml_args.fast and (yaml_args.fast.upper() == "Y" or yaml_args.fast.upper() == "YES")):
             g["GRID_STEP_M"]  = 25.0
-            g["H_REC_RASTER"] = 2.0
+            g["H_REC_RASTER"] = 4.0
             g["TIME_STEP_MIN"] = 5.0
             g["RASTER_TOL_M"] = 1.0 
             g["MAX_CHECKS_STEP"] = 4000
@@ -289,6 +289,16 @@ N_SAMP_PER_KM = 48
 # No cal mirar per elevació per sota de 3º
 MIN_ELEV = 3.0
 TOL_AZDEG = 10
+
+# Procurar més concordància de resultats de receptors i terrain screening
+REC_PIX_RING = 2 # per fer un screening extra al voltant dels receptors pel terrain screening
+
+# Garantir concordància amb resultats 
+BLOCK_MIN_LEN_M = 25.0 # llargada mínima de bloqueig
+
+R_EARTH = 6371000.0
+K_FACTOR = 4.0/3.0
+R_EFF = R_EARTH * K_FACTOR
 
 
 # Precalc of turbine horizons
@@ -629,6 +639,44 @@ def dynamic_tol_azdeg(dist_h, rotor_d, az_drift_per_step_deg, k=1.2, min_deg=3.0
     return max(min_deg, min(max_deg, tol))
 
 # ---------- (4) Numba screening ----------
+def build_receptor_pixels_for_screening_on_grid(RPTS, xx, yy, ring_pix=1):
+    """
+    Retorna índexs locals (i,j) de la malla XX,YY al voltant dels receptors.
+    ring_pix=1 → quadrat 3x3, ring_pix=2 → 5x5, etc.
+    """
+    pix = set()
+    nx = xx.size
+    ny = yy.size
+    if nx == 0 or ny == 0:
+        return np.empty((0,2), dtype=np.int64)
+
+    # Suposem grid regular: pas constant
+    dx = xx[1] - xx[0] if nx > 1 else 1.0
+    dy = yy[1] - yy[0] if ny > 1 else 1.0
+
+    for (nucli, rid, rx, ry, hrec) in RPTS:
+        # Índex local aproximat
+        j0 = int(round((rx - xx[0]) / dx))
+        i0 = int(round((ry - yy[0]) / dy))
+
+        if j0 < 0 or j0 >= nx or i0 < 0 or i0 >= ny:
+            continue  # receptor fora de la malla
+
+        for di in range(-ring_pix, ring_pix+1):
+            for dj in range(-ring_pix, ring_pix+1):
+                i = i0 + di
+                j = j0 + dj
+                if 0 <= i < ny and 0 <= j < nx:
+                    pix.add((i, j))
+
+    if not pix:
+        return np.empty((0,2), dtype=np.int64)
+
+    return np.array(sorted(pix), dtype=np.int64)  # (i_local, j_local)
+
+# Globals (perquè els faràs servir des de raster_step_with_screening_numba)
+REC_PIX_EXTRA = None
+
 @njit(cache=True, fastmath=True)
 def _dem_bilinear_scalar(Z, x, y, TA, TB, TC, TD, TE, TF):
     # Inversa afí (GDAL/rasterio): 
@@ -664,45 +712,65 @@ def _dem_bilinear_scalar(Z, x, y, TA, TB, TC, TD, TE, TF):
     return float(z0*(1.0-tx) + z1*tx)
 
 @njit(cache=True, fastmath=True)
-def _terrain_screen_ok_path_raster(tx, ty, px, py, elev_deg, rec_h_m,
-                            Z, TA, TB, TC, TD, TE, TF,
-                            n_samp_per_km, tol_m):
-    dist = math.hypot(px - tx, py - ty)
-    if dist < 1.0: return True
-    n_samp = int((dist/1000.0) * n_samp_per_km)
-    if n_samp < 16: n_samp = 16
-    z_p = _dem_bilinear_scalar(Z, px, py, TA, TB, TC, TD, TE, TF)
-    tan_e = math.tan(math.radians(elev_deg))
-    max_ex = -1e9
-    for i in range(n_samp):
-        t = 0.0 if n_samp == 1 else (i/(n_samp - 1.0))
-        x = px + (tx - px)*t
-        y = py + (ty - py)*t
-        z = _dem_bilinear_scalar(Z, x, y, TA, TB, TC, TD, TE, TF)
-        line = z_p + rec_h_m + tan_e*(t*dist)
-        ex = z - line
-        if ex > max_ex:
-            max_ex = ex
-            if max_ex > tol_m:   # tol per receptors (ajusta si cal)
-                return False
-    return (max_ex <= tol_m)
+def _terrain_screen_ok_path_raster(tx, ty, rotor_shade_h,
+                                   px, py, h_rec_raster,
+                                   DEM_Z, TA, TB, TC, TD, TE, TF,
+                                   n_samp_per_km, tol_m):
+    """
+    LOS raster: fa servir el mateix criteri que los_clear_turbine_to_point
+    dels receptors, però per a un píxel (px,py) i alçada h_rec_raster.
+    """
+
+    # Altura a la turbina
+    z_t = _dem_bilinear_scalar(DEM_Z, tx, ty, TA, TB, TC, TD, TE, TF)
+    if np.isnan(z_t):
+        # fora del DEM → millor considerar-ho clar per no sobrebloquejar
+        return True
+    z_t += rotor_shade_h
+
+    # Altura al píxel (receptor raster)
+    z_p = _dem_bilinear_scalar(DEM_Z, px, py, TA, TB, TC, TD, TE, TF)
+    if np.isnan(z_p):
+        return True
+    z_p += h_rec_raster
+
+    # Mostreig de la línia
+    samples = max(1, int(n_samp_per_km))
+    step_m = 1000.0 / float(samples)
+    tol = float(max(0.0, tol_m))
+
+    # Ús del mateix motor LOS que pels receptors
+    return _los_clear_tol_affine(tx, ty, z_t,
+                                 px, py, z_p,
+                                 DEM_Z, TA, TB, TC, TD, TE, TF,
+                                 step_m, tol)
 
 @njit(cache=True, fastmath=True, parallel=True)
-def terrain_screen_ok_batch(tx, ty, elev_deg, rec_h_m,
+def terrain_screen_ok_batch(tx, ty, rotor_shade_h, h_rec_raster,
                             rows, cols, XX, YY,
-                            Z, TA, TB, TC, TD, TE, TF,
+                            DEM_Z, TA, TB, TC, TD, TE, TF,
                             n_samp_per_km, tol_m):
-    
-    out = np.zeros(rows.shape[0], dtype=np.uint8)
-    for k in prange(rows.shape[0]): # en paral·lel amb prange
-        ri = int(rows[k]); ci = int(cols[k])
-        px = float(XX[ri, ci]); py = float(YY[ri, ci])
-        ok = _terrain_screen_ok_path_raster(tx, ty, px, py, elev_deg, rec_h_m,
-                                     Z, TA, TB, TC, TD, TE, TF,
-                                     n_samp_per_km, tol_m)
-        out[k] = 1 if ok else 0
-    return out
+    """
+    Comprova LOS per un lot de píxels (rows, cols) de la malla XX,YY
+    utilitzant el mateix criteri que als receptors.
+    Retorna un array uint8 de 0/1.
+    """
+    n = rows.size
+    out = np.ones(n, dtype=np.uint8)
 
+    for k in range(n):
+        i = rows[k]
+        j = cols[k]
+        px = XX[i, j]
+        py = YY[i, j]
+
+        if not _terrain_screen_ok_path_raster(tx, ty, rotor_shade_h,
+                                              px, py, h_rec_raster,
+                                              DEM_Z, TA, TB, TC, TD, TE, TF,
+                                              n_samp_per_km, tol_m):
+            out[k] = 0
+
+    return out
 
 # ---------- LOS robust amb tolerància ----------
 @njit(cache=True, fastmath=True)
@@ -813,7 +881,7 @@ def draw_dem_hillshade(ax, alpha_hs=0.85, alpha_dem=0.45, cmap_dem='Greys'):
     
 # ---------- (5) Raster step (Numba) + timing ----------
 ENABLE_TIMING = True
-TARGET_MS_PER_TURB = 12.0
+TARGET_MS_PER_TURB = 15.0
 def _new_timing_bucket():
     return {"total_calls":0, "total_ms":0.0, "per_turb":{}, "per_step":[]}
 
@@ -825,18 +893,23 @@ def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, dt_min, h_rec
                                      throttle=True,
                                      daily_hit_mask=None):
     t0 = time.perf_counter()
-    DX = XX - tx; DY = YY - ty
+    # fix error, this is not correct: DX = XX - tx; DY = YY - ty
+    # Correct:
+    DX = tx - XX
+    DY = ty - YY    
     dist_h = np.hypot(DX, DY)
-    az_rt  = (np.degrees(np.arctan2(DX, DY)) % 360.0 + 360.0) % 360.0
+    #az_rt  = (np.degrees(np.arctan2(DX, DY)) % 360.0 + 360.0) % 360.0
+    # ho mateix, més curt
+    az_rt = (np.degrees(np.arctan2(DX, DY)) + 360.0) % 360.0
+
     L = (rotor_shade_h - h_rec_raster) / max(np.tan(np.radians(elev)), 1e-6)
-    #L = (rotor_shade_h - h_rec_raster) / max(math.tan(math.radians(elev)), 1e-6)
 
     R = 0.5 * rotor_d
     ratio = np.clip(R / np.maximum(dist_h, 1e-6), 0.0, 1.0)
     theta_geom = np.degrees(np.arcsin(ratio))           # només geometria del disc
 
     # marge addicional opcional (configurable). Per WINDPRO-strict → 0.0
-    theta_extra = rotor_tol_deg  # + 0.5*az_drift_per_step_deg si ho vols contemplar
+    theta_extra = rotor_tol_deg  # + 0.5*az_drift_per_step_deg
     theta_allow = theta_geom + theta_extra
 
     # diferència d’azimut mínima (−180..+180)
@@ -846,11 +919,6 @@ def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, dt_min, h_rec
         (dist_h <= np.minimum(L, max_sf_dist)) &
         (daz <= theta_allow)
     )    
-    
-    #mask_cand = (
-    #    (dist_h <= min(L, max_sf_dist)) &
-    #    (np.abs(((az_rt - az + 180.0) % 360.0) - 180.0) <= rotor_tol_deg)
-    #)
     
     rr = np.array([])   
     cc = np.array([])   
@@ -866,14 +934,36 @@ def raster_step_with_screening_numba(XX, YY, acc_min, elev, az, w, dt_min, h_rec
         sel = np.linspace(0, idx.shape[0]-1, max_checks_per_step).astype(np.int64)
         idx_sel = idx[sel]
 
+    # fem un extra screening a prop de receptors si cal
+    if REC_PIX_EXTRA is not None and REC_PIX_EXTRA.shape[0] > 0:
+        s_cand = set((int(r), int(c)) for r, c in idx)        
+        s_sel  = set((int(r), int(c)) for r, c in idx_sel)
+
+        forced_pix = []
+        for r, c in REC_PIX_EXTRA:
+            key = (int(r), int(c))
+            if key not in s_cand:
+                continue         # no és candidat geomètric
+            #if key in s_cand and key not in s_sel:
+            if key not in s_sel:
+                forced_pix.append(key)
+
+        if forced_pix:
+            forced_pix = np.array(forced_pix, dtype=np.int64)
+            idx_sel = np.vstack([idx_sel, forced_pix])
+            idx_sel = np.unique(idx_sel, axis=0)            
+            print(f"[DEBUG] Extra receptor pixels afegits: {len(forced_pix)}")
+            
+        
     rows_sel = idx_sel[:,0].astype(np.int64)
     cols_sel = idx_sel[:,1].astype(np.int64)
+    
     ok_mask = terrain_screen_ok_batch(
-        float(tx), float(ty), elev, float(h_rec_raster),
+        float(tx), float(ty), float(rotor_shade_h), float(h_rec_raster),
         rows_sel, cols_sel, XX, YY,
         DEM_Z, TA, TB, TC, TD, TE, TF,
         int(n_samp_per_km), float(tol_m)
-    )
+    )    
 
     updated = 0
     if np.any(ok_mask):
@@ -998,6 +1088,19 @@ def quick_terrain_clear(tx, ty, px, py, elev_deg, Htable, margin_deg=0.5):
     h_req = interp_horizon(bearing, Htable)
     return elev_deg >= (h_req - margin_deg)
 
+@njit(cache=True, fastmath=True)
+def los_clear_turbine_to_point(tx, ty, rx, ry,
+                               rotor_shade_h, hrec,
+                               DEM_Z, TA, TB, TC, TD, TE, TF,
+                               n_samp_per_km, tol_m):
+    # Altura a la turbina: DEM + altura efectiva d’ombra del rotor
+    z_t = _dem_bilinear_scalar(DEM_Z, tx, ty, TA, TB, TC, TD, TE, TF) + rotor_shade_h
+    # Altura al receptor: DEM + alçada del receptor
+    z_r = _dem_bilinear_scalar(DEM_Z, rx, ry, TA, TB, TC, TD, TE, TF) + hrec
+    step_m = 1000.0 / max(1, int(n_samp_per_km))
+    return _los_clear_tol_affine(tx, ty, z_t,  rx, ry, z_r,
+                                 DEM_Z, TA, TB, TC, TD, TE, TF,
+                                 step_m, float(tol_m))
 
 def next_step_minutes(elev_deg: float) -> float:
     # Tall LAI/central: <3° → podem saltar ràpid
@@ -1036,10 +1139,6 @@ def compute_shadow_flicker_month(scen_name, month, args,
     # prepara XX,YY, acumuladors (idèntics en forma i dtype a l’anual)
     xmin, ymin, xmax, ymax = XMIN, YMIN, XMAX, YMAX
     
-    # original year run next two lines different
-    #xx = np.arange(XMIN, XMAX+GRID_STEP_M, GRID_STEP_M)
-    #yy = np.arange(YMIN, YMAX+GRID_STEP_M, GRID_STEP_M)
-    
     xx = np.arange(xmin, xmax+GRID_STEP_M*0.5, GRID_STEP_M)
     yy = np.arange(ymin, ymax+GRID_STEP_M*0.5, GRID_STEP_M)
     XX, YY = np.meshgrid(xx, yy)
@@ -1075,6 +1174,11 @@ def compute_shadow_flicker_month(scen_name, month, args,
 
     current_day = None
         
+    global REC_PIX_EXTRA
+    REC_PIX_EXTRA = build_receptor_pixels_for_screening_on_grid(
+        RPTS, xx, yy, ring_pix=REC_PIX_RING
+    )
+    
     def flush_day():
         for rid, flag in list(hit_today_R.items()):
             if flag:
@@ -1202,16 +1306,19 @@ def compute_shadow_flicker_month(scen_name, month, args,
                     continue
                 
                 
-                # DEM screening
+                # DEM screening, first unexpensive simple test
                 if use_screen:
                     H = get_horizon_for(tname, tx, ty, rotor_shade_h)                    
                     if not quick_terrain_clear(tx, ty, rx, ry, elev_t, H):
                         continue
-                    #if not _terrain_screen_ok_path(tx, ty, rx, ry, elev_t, hrec,
-                    #                               DEM_Z, TA, TB, TC, TD, TE, TF,
-                    #                               n_samp_per_km, RASTER_TOL_M):
-                    #    continue
-                        
+                
+                # Now expensive los test
+                if not los_clear_turbine_to_point(tx, ty, rx, ry,
+                                                  rotor_shade_h, hrec,
+                                                  DEM_Z, TA, TB, TC, TD, TE, TF,
+                                                  N_SAMP_PER_KM, RASTER_TOL_M):
+                    continue
+                    
                 # minutes_w = TIME_STEP_MIN if IS_WORST else TIME_STEP_MIN * w_base
                 minutes_w = dt_min if IS_WORST else dt_min * w_base
                 if minutes_w > 0:
@@ -1739,6 +1846,8 @@ def ensure_dem_loaded():
     DEM_NORM  = normalize01(DEM_Z)
     DEM_SHADE = make_hillshade(DEM_Z, DEM_XRES, DEM_YRES, az_deg=315.0, alt_deg=45.0,
                                valleys_light=VALLEYS_LIGHT)
+    
+    
     _DEM_CACHE = True
 
 def run_all(args) -> int:

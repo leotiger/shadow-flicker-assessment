@@ -1,0 +1,259 @@
+# Configuració Shadow Flicker Assessement
+
+project:
+  year: 2025
+  name: "Projecte Les Forques II"
+  esia: "MAH/2990/2010"
+  export: "PEFORQUESII"
+  site_lat: 41.515244
+  site_lon: 1.194816
+  dem_path: "DEM_clip_5m-rpglobal.tif"
+  output_dir: "pe-forques-ii"
+
+domain:
+  xmin: 348500
+  ymin: 4597500
+  xmax: 354500
+  ymax: 4601500
+
+turbines:
+  # Cada turbina amb coordenades UTM i paràmetres
+  
+  - id: "LF2"
+    x:  351541.60
+    y: 4598543.72
+    lat: 41.524779
+    lon: 1.220619
+    plat_h: 2.0
+    hub_height_m: 78.0
+    rotor_diameter_m: 90.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "Gamesa_2MW_G90"
+    power_MW: 2.0
+
+  - id: "LF3"
+    x:  351852.91
+    y: 4598701.47
+    lat: 41.526193
+    lon: 1.224309
+    plat_h: 2.0
+    hub_height_m: 78.0
+    rotor_diameter_m: 90.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "Gamesa_2MW_G90"
+    power_MW: 2.0
+
+  - id: "LF4"
+    x:  351697.57
+    y: 4599247.22
+    lat: 41.531142
+    lon: 1.222314
+    plat_h: 2.0
+    hub_height_m: 78.0
+    rotor_diameter_m: 90.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "Gamesa_2MW_G90"
+    power_MW: 2.0
+
+  - id: "LF5"
+    x:  351825.42
+    y: 4599548.62
+    lat: 41.533879
+    lon: 1.223771
+    plat_h: 2.0
+    hub_height_m: 78.0
+    rotor_diameter_m: 90.0
+    platform_offset_m: 2.0
+    shade_corr: 0.485
+    cut_in: 3.0
+    cut_out: 25.0
+    model: "Gamesa_2MW_G90"
+    power_MW: 2.0
+
+  # … afegeix més turbines …
+
+receptors:
+  - town: "El Fonoll"
+    id: "FON_1"
+    x: 352466.20
+    y: 4598962.79
+    height_m: 4.0
+
+shadow_flicker:
+  time_step_min: 1.0         # resolució temporal en minuts, 1min protocol alemany
+  grid_step_m: 15       # pas del raster. < 25 afegeix molta carrega computacional, per sota de 15 costarà molt
+  raster_tol_m: 0.5 # avoid DEM insconsistencies
+  h_rec_raster_m: 2.0
+  max_checks_step: 5000    # no puja a més de 5000 per evitar carrega computacional
+  n_samp_per_km: 100        # 100 = every 10,0m, 60 ~= every 16,6m, 40 = every 25m
+  tol_azdeg: 0 # strict, cap tolerància, té sentit amb timestep 1.0, per fast apliquem el 10 graus per aproximar els resultats  
+  
+  min_elev_deg: 3.0          # llindar geomètric mínim protocol alemany
+  min_ghi_wm2: 120.0         # irradiància mínima per considerar SF
+  annual_limit_hours_astr: 30.0
+  annual_limit_hours_real: 8.0
+  daily_limit_min: 30.0
+
+wind:
+  use_dir_reweight: true
+  n_sectors: 8               # N, NE, E, SE, S, SW, W, NW
+
+  # basat en recurs eòlic del projecte comunicat pel promotor a partir de freqüències
+  monthly_dir_rose:
+    1:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.16, S: 0.11, SW: 0.18, W: 0.31, NW: 0.17}
+    2:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.17, S: 0.11, SW: 0.19, W: 0.29, NW: 0.17}
+    3:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.18, S: 0.11, SW: 0.20, W: 0.28, NW: 0.16}
+    4:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.18, S: 0.11, SW: 0.20, W: 0.28, NW: 0.16}
+    5:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.18, S: 0.11, SW: 0.20, W: 0.28, NW: 0.16}
+    6:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.17, S: 0.10, SW: 0.20, W: 0.31, NW: 0.15}
+    7:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.17, S: 0.10, SW: 0.20, W: 0.32, NW: 0.14}
+    8:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.17, S: 0.10, SW: 0.20, W: 0.31, NW: 0.15}
+    9:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.17, S: 0.11, SW: 0.19, W: 0.30, NW: 0.16}
+    10:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.17, S: 0.11, SW: 0.19, W: 0.30, NW: 0.16}
+    11:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.17, S: 0.11, SW: 0.19, W: 0.29, NW: 0.17}
+    12:  {N: 0.01, NE: 0.03, E: 0.03, SE: 0.16, S: 0.11, SW: 0.18, W: 0.31, NW: 0.17}
+
+  wind_rose: ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
+
+# fracció de dies amb sol i alta irradiació sobre mes
+sunshine_frac_profiles:
+  WORST:
+    1: 1.0
+    2: 1.0
+    3: 1.0
+    4: 1.0
+    5: 1.0
+    6: 1.0
+    7: 1.0
+    8: 1.0
+    9: 1.0
+    10: 1.0
+    11: 1.0
+    12: 1.0
+
+  REALISTIC:
+    1: 0.52
+    2: 0.52
+    3: 0.55
+    4: 0.60
+    5: 0.70
+    6: 0.75
+    7: 0.80
+    8: 0.80
+    9: 0.70
+    10: 0.65
+    11: 0.55
+    12: 0.52
+
+# limitar per falta de vent puntual
+avail_month_profiles:
+  WORST:
+    1: 1.0
+    2: 1.0
+    3: 1.0
+    4: 1.0
+    5: 1.0
+    6: 1.0
+    7: 1.0
+    8: 1.0
+    9: 1.0
+    10: 1.0
+    11: 1.0
+    12: 1.0
+
+  REALISTIC:
+    1: 0.975
+    2: 0.975
+    3: 0.975
+    4: 0.975
+    5: 0.975
+    6: 0.975
+    7: 0.975
+    8: 0.975
+    9: 0.975
+    10: 0.975
+    11: 0.975
+    12: 0.975
+
+# parada per manteniment/successos interns o causes externes com curtailment REE
+curtail_month_profiles:
+  WORST:
+    maint:
+      1: 0.0
+      2: 0.0
+      3: 0.0
+      4: 0.0
+      5: 0.0
+      6: 0.0
+      7: 0.0
+      8: 0.0
+      9: 0.0
+      10: 0.0
+      11: 0.0
+      12: 0.0
+    ree:
+      1: 0.0
+      2: 0.0
+      3: 0.0
+      4: 0.0
+      5: 0.0
+      6: 0.0
+      7: 0.0
+      8: 0.0
+      9: 0.0
+      10: 0.0
+      11: 0.0
+      12: 0.0
+
+  REALISTIC:
+    maint:
+      1: 0.0
+      2: 0.0
+      3: 0.02
+      4: 0.02
+      5: 0.02
+      6: 0.02
+      7: 0.02
+      8: 0.02
+      9: 0.02
+      10: 0.02
+      11: 0.02
+      12: 0.0
+    ree:
+      1: 0.01
+      2: 0.01
+      3: 0.015
+      4: 0.015
+      5: 0.02
+      6: 0.03
+      7: 0.03
+      8: 0.03
+      9: 0.02
+      10: 0.01
+      11: 0.01
+      12: 0.01
+
+# recurs eòlic
+wind_weibull:
+  1:  {k: 2.0, c: 7.3}
+  2:  {k: 2.0, c: 7.6}
+  3:  {k: 2.0, c: 7.8}
+  4:  {k: 2.0, c: 8.1}
+  5:  {k: 2.0, c: 8.2}
+  6:  {k: 2.0, c: 8.0}
+  7:  {k: 2.0, c: 7.6}
+  8:  {k: 2.0, c: 7.5}
+  9:  {k: 2.0, c: 7.4}
+  10: {k: 2.0, c: 7.7}
+  11: {k: 2.0, c: 7.6}
+  12: {k: 2.0, c: 7.3}
+
