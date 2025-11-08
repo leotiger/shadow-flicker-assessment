@@ -5,6 +5,7 @@ Amb DEM screening (Numba), raster i receptors, dies afectats i minuts/dia.
 Inclou: CSV #META, timing, curtailment mensual, Weibull vent, reponderació direccional (mitjana=1),
 SOL per turbina (opcional), tall 10×D, tolerància azimutal.
 """
+VERSION = 1.0
 import os, math, time, yaml, argparse, sys, json, csv, datetime as dt
 from collections import defaultdict, deque
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -33,7 +34,7 @@ except Exception:
         return wrap
     def prange(*args, **kwargs):
         return range(*args)  # fallback segur
-    
+
 cfg = None
 
 def _num(x, default=None):
@@ -1668,7 +1669,7 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     MPD = res["minutes_per_day_grid"]
 
     fig, ax = plt.subplots(1,1, figsize=(12,6), constrained_layout=True)
-    fig.suptitle(f"{title_prefix} – hores/any")
+    fig.suptitle(f"{title_prefix} – hores/any\nShadow Flicker Assessment, version: {VERSION}")
 
     # Hores/any
     draw_dem_hillshade(ax, alpha_hs=0.9, alpha_dem=0.35)   # << fons DEM+HS    
@@ -1693,7 +1694,7 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     plt.savefig(result_path, dpi=180); plt.close(fig)
     
     fig, ax = plt.subplots(1,1, figsize=(12,6), constrained_layout=True)
-    fig.suptitle(f"{title_prefix} – dies/any")
+    fig.suptitle(f"{title_prefix} – dies/any\nShadow Flicker Assessment, version: {VERSION}")
 
     # Dies/any
     draw_dem_hillshade(ax, alpha_hs=0.9, alpha_dem=0.35)
@@ -1720,7 +1721,7 @@ def plot_all_maps(res, title_prefix="Shadow Flicker", file_suffix=""):
     plt.savefig(result_path, dpi=180); plt.close(fig)
 
     fig, ax = plt.subplots(1,1, figsize=(12,6), constrained_layout=True)    
-    fig.suptitle(f"{title_prefix} – minuts/dia afectat")
+    fig.suptitle(f"{title_prefix} – minuts/dia afectat\nShadow Flicker Assessment, version: {VERSION}")
     
     # Minuts/dia afectat (mitjana)
     draw_dem_hillshade(ax, alpha_hs=0.9, alpha_dem=0.35)  
