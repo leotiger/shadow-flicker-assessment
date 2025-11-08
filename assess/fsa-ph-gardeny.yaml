@@ -139,10 +139,10 @@ receptors:
 shadow_flicker:
   time_step_min: 1.0         # resolució temporal en minuts, 1min protocol alemany
   grid_step_m: 15          # pas del raster. < 25 afegeix molta carrega computacional
-  raster_tol_m: 1.0
+  raster_tol_m: 0.5
   h_rec_raster_m: 2.0
   max_checks_step: 5000    # no puja a més de 5000 per evitar carrega computacional
-  n_samp_per_km: 60        # 60 ~= 16,6m, 40 = 25m
+  n_samp_per_km: 100        # 60 ~= 16,6m, 40 = 25m
   tol_azdeg: 0 # strict, cap tolerància, té sentit amb timestep 1.0, per fast apliquem el 10 graus per aproximar els resultats  
   
   min_elev_deg: 3.0          # llindar geomètric mínim protocol alemany
