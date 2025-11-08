@@ -14,7 +14,7 @@
 #META;time_step_min;1.0
 #META;grid_step_m;15.0
 #META;h_rec_raster;2.0
-#META;raster_tol_m;1.0
+#META;raster_tol_m;0.5
 Nucli;ReceptorID;X;Y;h_rec(m);Hores_any;Dies_afectats;Minuts/dia(mitjana);Dies>30min;Max_min_dia;Data_max_dia;Límit_h_any;Compl_any;Excés_h_any
 La Pobla de Ferran;PBF_1;349013.0;4599960.0;2.0;0.0;0;0.0;0;0.0;;30.0;True;0.0
 Passanant;PAS_1;349455.0;4599284.0;2.0;45.37;68;40.03;42;74.0;2025-11-05;30.0;False;15.37
