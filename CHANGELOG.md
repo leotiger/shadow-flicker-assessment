@@ -8,7 +8,7 @@
 3. [](#improved)
     * Add terrain points around receptors to be considered if necessary for terrain screening
 4. [](#improved)
-    * Add basic version information for tracebility
+    * Add basic version information for traceability
     
 # v0.1
 ## 2024-10-23
